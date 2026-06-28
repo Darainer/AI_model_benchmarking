@@ -35,9 +35,11 @@ bench:
 bench-cpu:
 	$(RUN) python3 scripts/run_benchmark.py --providers CPUExecutionProvider
 
-## Benchmark a real video file:  make bench-file VIDEO=/workspace/clip.mp4
+## Benchmark a real video file (host path):  make bench-file VIDEO=/home/user/clip.mp4
 bench-file:
-	$(RUN) python3 scripts/run_benchmark.py --input-type file --source $(VIDEO)
+	$(COMPOSE) run --rm \
+	  -v $(dir $(abspath $(VIDEO))):/video:ro \
+	  $(SVC) python3 scripts/run_benchmark.py --input-type file --source /video/$(notdir $(VIDEO))
 
 ## Remove the built image
 clean:

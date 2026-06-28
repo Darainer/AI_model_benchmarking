@@ -46,15 +46,19 @@ def run_all(
 
     monitor = HardwareMonitor(interval_ms=bench_cfg.get("monitor_interval_ms", 200))
     all_metrics: List[RunMetrics] = []
+    run_ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     for model_cfg in models_config:
         name = model_cfg["name"]
         logger.info("─── %s ───", name)
 
+        # Per-model provider override (e.g. to skip TRT EP for specific models)
+        model_providers = model_cfg.get("onnx_providers", ort_providers)
+
         # ── load ────────────────────────────────────────────────────────
         try:
             model_path = ensure_model(model_cfg, models_root=models_root)
-            model = build_model(model_cfg, model_path, ort_providers=ort_providers)
+            model = build_model(model_cfg, model_path, ort_providers=model_providers)
         except Exception as exc:
             logger.error("Failed to load %s: %s", name, exc)
             continue
@@ -69,6 +73,7 @@ def run_all(
             model_name=name,
             backend=model.backend_name(),
             task=model_cfg["task"],
+            run_timestamp=run_ts,
         )
 
         # ── benchmark ────────────────────────────────────────────────────
@@ -94,7 +99,8 @@ def run_all(
     if all_metrics:
         _print_report_table(all_metrics, input_cfg, monitor.backend)
         if out_cfg.get("csv", True):
-            _save_csv(all_metrics, results_dir / "benchmark_results.csv")
+            ts_file = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+            _save_csv(all_metrics, results_dir / f"benchmark_{ts_file}.csv")
 
     return all_metrics
 
@@ -107,8 +113,8 @@ def _print_model_summary(m: RunMetrics) -> None:
     if hw.get("mem_bw_avg_gb_s") is not None:
         bw_str = (f"  BW      : avg {hw['mem_bw_avg_gb_s']:.1f} GB/s  "
                   f"peak {hw['mem_bw_peak_gb_s']:.1f} GB/s")
-        if hw.get("mem_bw_theoretical_gb_s"):
-            bw_str += f"  (theoretical {hw['mem_bw_theoretical_gb_s']:.1f} GB/s)"
+        if hw.get("mem_bw_peak_capacity_gb_s"):
+            bw_str += f"  (capacity {hw['mem_bw_peak_capacity_gb_s']:.1f} GB/s)"
 
     print(f"\n{'='*64}")
     print(f"  {m.model_name}  [{m.backend}]  task={m.task}")
@@ -126,6 +132,9 @@ def _print_model_summary(m: RunMetrics) -> None:
               + (f"  / {hw['gpu_mem_total_mb']:.0f} MB total" if hw.get("gpu_mem_total_mb") else ""))
     if bw_str:
         print(bw_str)
+    if hw.get("gpu_power_avg_mw") is not None:
+        print(f"  Power   : avg {hw['gpu_power_avg_mw']:.0f} mW  "
+              f"peak {hw['gpu_power_peak_mw']:.0f} mW  (CPU+GPU+CV rail)")
     print(f"{'='*64}")
 
 
@@ -153,7 +162,7 @@ def _print_report_table(
     # header
     h = (f"  {'Model':<{_COL_W}}  {'Backend':<10}  {'Task':<14}  "
          f"{'Frms':>5}  {'avg ms':>7}  {'p95 ms':>7}  {'FPS':>6}  "
-         f"{'GPU%':>5}  {'Mem MB':>7}  {'BW avg':>7}  {'BW peak':>8}")
+         f"{'GPU%':>5}  {'Mem MB':>7}  {'Pwr mW':>7}")
     print(h)
     print("  " + "─" * (len(h) - 2))
 
@@ -169,24 +178,22 @@ def _print_report_table(
             f"  {_fmt(m.throughput_fps):>6}"
             f"  {_fmt(hw.get('gpu_util_avg_pct'), '.0f'):>5}"
             f"  {_fmt(hw.get('gpu_mem_used_peak_mb'), '.0f'):>7}"
-            f"  {_fmt(hw.get('mem_bw_avg_gb_s')):>6} GB/s"
-            f"  {_fmt(hw.get('mem_bw_peak_gb_s')):>6} GB/s"
+            f"  {_fmt(hw.get('gpu_power_avg_mw'), '.0f'):>7}"
         )
 
-    # bandwidth footer (if available)
-    bw_vals = [m.hw.get("mem_bw_avg_gb_s") for m in metrics if m.hw.get("mem_bw_avg_gb_s")]
-    theoretical = next(
-        (m.hw.get("mem_bw_theoretical_gb_s") for m in metrics if m.hw.get("mem_bw_theoretical_gb_s")),
+    # bandwidth footer (if available) — label reflects whether the capacity was
+    # measured (CuPy d2d on Jetson) or theoretical (pynvml spec on discrete GPUs)
+    cap_hw = next(
+        (m.hw for m in metrics if m.hw.get("mem_bw_peak_capacity_gb_s")),
         None,
     )
-    if bw_vals:
-        overall_avg  = sum(bw_vals) / len(bw_vals)
-        overall_peak = max(m.hw.get("mem_bw_peak_gb_s", 0) for m in metrics)
+    if cap_hw:
+        capacity = cap_hw["mem_bw_peak_capacity_gb_s"]
+        label = ("Measured peak mem BW (CuPy d2d)"
+                 if cap_hw.get("mem_bw_source") == "measured"
+                 else "Theoretical peak mem BW (pynvml)")
         print("  " + "─" * (len(h) - 2))
-        bw_line = f"  Memory Bandwidth across all models: avg {overall_avg:.1f} GB/s  peak {overall_peak:.1f} GB/s"
-        if theoretical:
-            bw_line += f"  (theoretical {theoretical:.1f} GB/s)"
-        print(bw_line)
+        print(f"  {label}: {capacity:.1f} GB/s")
 
     print(bar + "\n")
 

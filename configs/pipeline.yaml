@@ -9,7 +9,7 @@ input:
 
   # For type: image_dir — directory of images (jpg/png)
   # source: /path/to/images/
-  # max_frames: 200  # Optional cap
+  # max_frames: 300  # Optional frame cap (default applied automatically for file inputs)
 
   # For type: usb_camera
   # device: /dev/video0

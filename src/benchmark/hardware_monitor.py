@@ -35,18 +35,23 @@ class HardwareSample:
     gpu_util_pct: Optional[float] = None
     gpu_mem_used_mb: Optional[float] = None
     gpu_mem_total_mb: Optional[float] = None
-    # mem_bw_util_pct: EMC% on Jetson, utilization.memory on nvidia-smi
-    #   (fraction of cycles the memory controller is active — a bandwidth proxy)
+    # mem_bw_util_pct: EMC% on Jetson (JetPack ≤5), utilization.memory on nvidia-smi
+    #   Not available on JetPack 6 / Orin inside a non-privileged container.
     mem_bw_util_pct: Optional[float] = None
-    # mem_bw_gb_s: estimated GB/s = util% × theoretical_peak
     mem_bw_gb_s: Optional[float] = None
     gpu_clock_mhz: Optional[float] = None
+    # CPU+GPU+CV power rail (mW); available on JetPack 6 Orin via tegrastats VDD fields
+    gpu_power_mw: Optional[float] = None
 
 
 # ── tegrastats parser ──────────────────────────────────────────────────────
 _TS_RAM  = re.compile(r"RAM (\d+)/(\d+)MB")
-_TS_GR3D = re.compile(r"GR3D (\d+)%@(\d+)")
-_TS_EMC  = re.compile(r"EMC (\d+)%@(\d+)")
+# JetPack 5-: "GR3D X%@CLOCK"  JetPack 6/Orin: "GR3D_FREQ X%"
+_TS_GR3D = re.compile(r"GR3D(?:_FREQ)? (\d+)%(?:@(\d+))?")
+# EMC field dropped in JetPack 6 on Orin; kept for older Jetson boards
+_TS_EMC  = re.compile(r"EMC(?:_FREQ)? (\d+)%@(\d+)")
+# GPU-related power rail (CPU+GPU+CV subsystem); format: "VDD_CPU_GPU_CV CURmW/AVGmW"
+_TS_VDD_GPU = re.compile(r"VDD_CPU_GPU_CV (\d+)mW/(\d+)mW")
 
 
 def _parse_tegrastats(line: str) -> HardwareSample:
@@ -60,8 +65,13 @@ def _parse_tegrastats(line: str) -> HardwareSample:
 
     m = _TS_GR3D.search(line)
     if m:
-        s.gpu_util_pct  = float(m.group(1))
-        s.gpu_clock_mhz = float(m.group(2))
+        s.gpu_util_pct = float(m.group(1))
+        if m.group(2):
+            s.gpu_clock_mhz = float(m.group(2))
+
+    m = _TS_VDD_GPU.search(line)
+    if m:
+        s.gpu_power_mw = float(m.group(1))  # instantaneous reading
 
     m = _TS_EMC.search(line)
     if m:
@@ -112,6 +122,37 @@ def _query_theoretical_bw_pynvml() -> Optional[float]:
         return None
 
 
+_EMC_CAP_PATH = "/sys/kernel/nvpmodel_clk_cap/emc"
+
+def _measure_bw_cupy() -> Optional[float]:
+    """Measure peak GPU memory bandwidth via a CuPy device-to-device memcpy benchmark.
+
+    Uses 256 MB transfers × 5 iterations so the measurement takes ~100 ms and
+    is stable enough for a one-time baseline. Returns GB/s or None on failure.
+    """
+    try:
+        import cupy as cp  # type: ignore
+        n = 256 * 1024 * 1024 // 4  # float32 elements → 256 MB
+        src = cp.random.rand(n, dtype=cp.float32)
+        dst = cp.empty_like(src)
+        # Warmup pass
+        cp.copyto(dst, src)
+        cp.cuda.Stream.null.synchronize()
+        # Timed passes
+        t0 = time.perf_counter()
+        iters = 5
+        for _ in range(iters):
+            cp.copyto(dst, src)
+        cp.cuda.Stream.null.synchronize()
+        elapsed = time.perf_counter() - t0
+        # Each iteration reads 256 MB and writes 256 MB → 512 MB per iter
+        bw_gb_s = iters * 512 / 1024 / elapsed
+        del src, dst
+        return round(bw_gb_s, 1)
+    except Exception:
+        return None
+
+
 # ── monitor ────────────────────────────────────────────────────────────────
 
 class HardwareMonitor:
@@ -133,8 +174,12 @@ class HardwareMonitor:
             r = subprocess.run(["which", "tegrastats"],
                                capture_output=True, timeout=2)
             if r.returncode == 0:
-                logger.info("HardwareMonitor: backend=tegrastats")
-                return "tegrastats", None
+                bw = _measure_bw_cupy()
+                logger.info(
+                    "HardwareMonitor: backend=tegrastats  measured_peak_bw=%s",
+                    f"{bw:.1f} GB/s" if bw else "unavailable",
+                )
+                return "tegrastats", bw
         except Exception:
             pass
 
@@ -258,6 +303,16 @@ class HardwareMonitor:
             "mem_bw_util_peak_pct":     peak(s.mem_bw_util_pct for s in samples),
             "mem_bw_avg_gb_s":          avg(s.mem_bw_gb_s for s in samples),
             "mem_bw_peak_gb_s":         peak(s.mem_bw_gb_s for s in samples),
-            "mem_bw_theoretical_gb_s":  self._theoretical_gb_s,
+            # Peak memory bandwidth capacity. On Jetson (tegrastats) this is a
+            # measured CuPy device-to-device copy; on discrete GPUs (nvidia-smi)
+            # it is the pynvml theoretical spec. mem_bw_source records which.
+            "mem_bw_peak_capacity_gb_s": self._theoretical_gb_s,
+            "mem_bw_source": (
+                None if self._theoretical_gb_s is None
+                else "measured" if self.backend == "tegrastats"
+                else "theoretical"
+            ),
             "gpu_clock_avg_mhz":        avg(s.gpu_clock_mhz for s in samples),
+            "gpu_power_avg_mw":         avg(s.gpu_power_mw for s in samples),
+            "gpu_power_peak_mw":        peak(s.gpu_power_mw for s in samples),
         }

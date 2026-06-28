@@ -14,6 +14,7 @@ class RunMetrics:
     latencies_ms: List[float] = field(default_factory=list)
     frames_processed: int = 0
     wall_time_s: float = 0.0
+    run_timestamp: str = ""
 
     # Populated by HardwareMonitor.summary() after inference completes
     hw: Dict[str, Any] = field(default_factory=dict)
@@ -45,6 +46,7 @@ class RunMetrics:
     def flat_dict(self) -> dict:
         """Flat dict suitable for CSV row — merges latency fields with hw stats."""
         d = {
+            "run_timestamp":   self.run_timestamp,
             "model":           self.model_name,
             "backend":         self.backend,
             "task":            self.task,
@@ -61,7 +63,10 @@ class RunMetrics:
             "gpu_mem_used_peak_mb":  self.hw.get("gpu_mem_used_peak_mb"),
             "mem_bw_avg_gb_s":       self.hw.get("mem_bw_avg_gb_s"),
             "mem_bw_peak_gb_s":      self.hw.get("mem_bw_peak_gb_s"),
-            "mem_bw_theoretical_gb_s": self.hw.get("mem_bw_theoretical_gb_s"),
+            "mem_bw_peak_capacity_gb_s": self.hw.get("mem_bw_peak_capacity_gb_s"),
+            "mem_bw_source":         self.hw.get("mem_bw_source"),
+            "gpu_power_avg_mw":      self.hw.get("gpu_power_avg_mw"),
+            "gpu_power_peak_mw":     self.hw.get("gpu_power_peak_mw"),
         }
         return d
 

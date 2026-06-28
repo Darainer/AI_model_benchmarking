@@ -64,6 +64,9 @@ def parse_args():
     p.add_argument("--height", type=int, help="Override frame height")
     p.add_argument("--frames", type=int,
                    help="Max frames to process per model (overrides benchmark_runs)")
+    p.add_argument("--max-frames", type=int, metavar="N",
+                   help="Max frames to read from video/camera per model "
+                        "(default: 300 for file inputs, unlimited for cameras)")
 
     # Backend
     p.add_argument("--providers", nargs="+",
@@ -141,6 +144,17 @@ def main():
         if not models:
             logger.error("No models matched filter: %s", args.filter)
             sys.exit(1)
+
+    # Frame cap for video/camera inputs. An explicit --max-frames always wins.
+    # Otherwise file inputs get a default ~10s cap, but never below the largest
+    # benchmark_runs of the models being run — so open_source() can supply every
+    # requested frame instead of stopping short at 300 and recording fewer frames
+    # than the per-model benchmark target.
+    if args.max_frames is not None:
+        input_cfg["max_frames"] = args.max_frames
+    elif input_cfg.get("type") == "file" and "max_frames" not in input_cfg:
+        max_bench = max((m.get("benchmark_runs", 100) for m in models), default=100)
+        input_cfg["max_frames"] = max(300, max_bench)  # default: ~10s at 30fps
 
     results_dir = Path(args.results_dir) if args.results_dir else None
     models_root = Path(args.models_dir)

@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1
 # AI Model Benchmarking — Jetson Orin (JetPack 6.x / L4T r36.x, CUDA 12.6)
 #
 # Base: dustynv/l4t-ml — prebuilt, Jetson-compiled GPU stack:
@@ -13,7 +14,7 @@ FROM dustynv/l4t-ml:r36.4.0
 # transformers/smp/etc. list torch, torchvision, opencv etc. as dependencies.
 # Pinning the already-installed versions as constraints makes pip treat them as
 # satisfied and leaves the (GPU-enabled, aarch64) builds untouched.
-RUN python3 -m pip install --no-cache-dir --upgrade pip && \
+RUN --network=host python3 -m pip install --no-cache-dir --upgrade pip && \
     pip freeze 2>/dev/null \
       | grep -iE '^(torch|torchvision|torchaudio|onnxruntime|onnxruntime-gpu|numpy|opencv|pandas)' \
       > /opt/jetson-constraints.txt || true && \
@@ -23,7 +24,8 @@ RUN python3 -m pip install --no-cache-dir --upgrade pip && \
 # opencv-python and onnxruntime-gpu are deliberately absent — they come from
 # the base and must not be reinstalled from PyPI.
 COPY requirements-docker.txt /tmp/requirements-docker.txt
-RUN pip install --no-cache-dir -c /opt/jetson-constraints.txt \
+RUN --network=host pip install --no-cache-dir -c /opt/jetson-constraints.txt \
+        --extra-index-url https://pypi.org/simple \
         -r /tmp/requirements-docker.txt
 
 # Project code. The repo is also bind-mounted over /workspace at runtime (see

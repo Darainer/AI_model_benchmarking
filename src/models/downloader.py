@@ -170,7 +170,7 @@ def _download_from_huggingface(config: Dict[str, Any], dest: Path) -> None:
         wrapper,
         dummy,
         str(dest),
-        opset_version=12,
+        opset_version=14,
         input_names=["pixel_values"],
         output_names=["logits"],
         dynamic_axes={"pixel_values": {0: "batch"}, "logits": {0: "batch"}},
@@ -240,20 +240,30 @@ def _download_lightglue(
 ) -> None:
     """Export SuperPoint (extractor) and LightGlue (matcher) to ONNX.
 
-    Requires the full LightGlue package with onnx support:
-        pip install git+https://github.com/cvg/LightGlue.git
+    The ONNX export helpers live in lightglue.onnx, which is part of the cvg
+    git source but is NOT included in the PyPI 'lightglue' package.  You must
+    install from the git source:
 
-    The `lightglue.onnx` submodule (OnnxSuperPoint / OnnxLightGlue) provides
-    ONNX-exportable wrapper classes that handle dynamic keypoint counts.
+        pip install 'git+https://github.com/cvg/LightGlue.git'
+
+    Verify the submodule is present:
+        python -c 'from lightglue.onnx import OnnxSuperPoint'
     """
     try:
         import torch
-        from lightglue.onnx import OnnxSuperPoint, OnnxLightGlue  # type: ignore
     except ImportError as exc:
         raise RuntimeError(
-            "LightGlue onnx module not found.\n"
-            "Install: pip install git+https://github.com/cvg/LightGlue.git\n"
-            "(The plain 'pip install lightglue' may not include the onnx submodule.)"
+            "torch is required for LightGlue ONNX export.  Install: pip install torch"
+        ) from exc
+
+    try:
+        from lightglue.onnx import OnnxSuperPoint, OnnxLightGlue  # type: ignore
+    except (ImportError, ModuleNotFoundError) as exc:
+        raise RuntimeError(
+            "lightglue.onnx not found.  The PyPI package ('pip install lightglue')\n"
+            "does NOT include the ONNX export helpers.  Install from source:\n"
+            "  pip install 'git+https://github.com/cvg/LightGlue.git'\n"
+            "Then verify: python -c 'from lightglue.onnx import OnnxSuperPoint'"
         ) from exc
 
     name        = config["name"]

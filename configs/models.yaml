@@ -64,36 +64,39 @@ models:
     warmup_runs: 10
     benchmark_runs: 100
 
-  - name: yolov8n
-    task: detection
-    backend: onnx
-    source: url
-    url: "https://github.com/ultralytics/assets/releases/download/v8.1.0/yolov8n.onnx"
-    local_path: "models/yolov8n.onnx"
-    input_shape: [1, 3, 640, 640]
-    input_mean: [0.0, 0.0, 0.0]
-    input_std: [1.0, 1.0, 1.0]
-    conf_threshold: 0.25
-    iou_threshold: 0.45
-    num_classes: 80
-    warmup_runs: 5
-    benchmark_runs: 50
-
-  # ── Detection (additional) ─────────────────────────────────────────────────
-  # Requires: pip install ultralytics>=8.3  (YOLO11 was added in 8.3.0)
-  - name: yolo11n
-    task: detection
-    backend: onnx
-    source: ultralytics
-    local_path: "models/yolo11n.onnx"
-    input_shape: [1, 3, 640, 640]
-    input_mean: [0.0, 0.0, 0.0]
-    input_std: [1.0, 1.0, 1.0]
-    conf_threshold: 0.25
-    iou_threshold: 0.45
-    num_classes: 80
-    warmup_runs: 5
-    benchmark_runs: 50
+  # NOTE: yolov8n and yolo11n require the ultralytics package to export ONNX.
+  # ultralytics hard-depends on opencv-python which clobbers the GStreamer build
+  # in this image. To use these models, export the ONNX on a host machine with
+  # ultralytics installed and copy the file to models/yolov8n.onnx, then set
+  # source: local. Alternatively install with --no-deps in a separate image.
+  #
+  # - name: yolov8n
+  #   task: detection
+  #   backend: onnx
+  #   source: local
+  #   local_path: "models/yolov8n.onnx"
+  #   input_shape: [1, 3, 640, 640]
+  #   input_mean: [0.0, 0.0, 0.0]
+  #   input_std: [1.0, 1.0, 1.0]
+  #   conf_threshold: 0.25
+  #   iou_threshold: 0.45
+  #   num_classes: 80
+  #   warmup_runs: 5
+  #   benchmark_runs: 50
+  #
+  # - name: yolo11n
+  #   task: detection
+  #   backend: onnx
+  #   source: ultralytics
+  #   local_path: "models/yolo11n.onnx"
+  #   input_shape: [1, 3, 640, 640]
+  #   input_mean: [0.0, 0.0, 0.0]
+  #   input_std: [1.0, 1.0, 1.0]
+  #   conf_threshold: 0.25
+  #   iou_threshold: 0.45
+  #   num_classes: 80
+  #   warmup_runs: 5
+  #   benchmark_runs: 50
 
   # Requires: pip install rfdetr
   - name: rf_detr_base

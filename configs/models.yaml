@@ -79,6 +79,71 @@ models:
     warmup_runs: 5
     benchmark_runs: 50
 
+  # ── Detection (additional) ─────────────────────────────────────────────────
+  # Requires: pip install ultralytics>=8.3  (YOLO11 was added in 8.3.0)
+  - name: yolo11n
+    task: detection
+    backend: onnx
+    source: ultralytics
+    local_path: "models/yolo11n.onnx"
+    input_shape: [1, 3, 640, 640]
+    input_mean: [0.0, 0.0, 0.0]
+    input_std: [1.0, 1.0, 1.0]
+    conf_threshold: 0.25
+    iou_threshold: 0.45
+    num_classes: 80
+    warmup_runs: 5
+    benchmark_runs: 50
+
+  # Requires: pip install rfdetr
+  - name: rf_detr_base
+    task: detection
+    backend: onnx
+    source: rfdetr
+    rfdetr_size: base
+    local_path: "models/rf_detr_base.onnx"
+    input_shape: [1, 3, 560, 560]
+    input_mean: [0.485, 0.456, 0.406]
+    input_std: [0.229, 0.224, 0.225]
+    warmup_runs: 5
+    benchmark_runs: 50
+
+  # ── Feature Matching ────────────────────────────────────────────────────────
+  # Requires: pip install git+https://github.com/cvg/LightGlue.git
+  # Both ONNX files (superpoint.onnx + superpoint_lightglue.onnx) are exported
+  # automatically on first download. Same frame used as both image0/image1 to
+  # benchmark the full pipeline latency at maximum match count.
+  - name: superpoint_lightglue
+    task: feature_matching
+    backend: lightglue
+    source: lightglue
+    local_path: "models/superpoint.onnx"
+    local_path_matcher: "models/superpoint_lightglue.onnx"
+    input_shape: [1, 1, 480, 640]   # grayscale [N, 1, H, W]
+    max_keypoints: 512
+    warmup_runs: 5
+    benchmark_runs: 50
+
+  # ── Visual SLAM ─────────────────────────────────────────────────────────────
+  # Requires: Isaac ROS Visual SLAM (libcuvslam.so system-installed)
+  #   sudo apt install ros-humble-isaac-ros-visual-slam
+  # or container: nvcr.io/nvidia/isaac/ros:aarch64-visual_slam
+  #
+  # camera_fx/fy/cx/cy: intrinsics for your specific camera. The defaults
+  # below are generic 640×480 estimates — tune to your calibration file.
+  - name: cuvslam_mono
+    task: visual_slam
+    backend: cuvslam
+    source: system                  # library is system-installed, no download
+    local_path: "models/.cuvslam_sentinel"
+    input_shape: [1, 1, 480, 640]   # grayscale, used to set tracker resolution
+    camera_fx: 515.0
+    camera_fy: 515.0
+    camera_cx: 320.0
+    camera_cy: 240.0
+    warmup_runs: 20                 # cuVSLAM needs frames to init its map
+    benchmark_runs: 100
+
   # ── Segmentation ───────────────────────────────────────────────────────────
   # Requires: pip install transformers torch   (first run exports to ONNX)
   - name: segformer_b0_ade

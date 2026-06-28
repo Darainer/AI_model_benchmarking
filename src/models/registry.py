@@ -27,6 +27,14 @@ def build_model(
         from src.models.backends.torch_backend import TorchModel
         m = TorchModel(config)
 
+    elif backend == "lightglue":
+        from src.models.backends.feature_matching_backend import LightGlueModel
+        m = LightGlueModel(config, ort_providers=ort_providers)
+
+    elif backend == "cuvslam":
+        from src.models.backends.cuvslam_backend import CuVSLAMModel
+        m = CuVSLAMModel(config)
+
     else:
         raise ValueError(f"Unknown backend '{backend}' for model '{config['name']}'")
 

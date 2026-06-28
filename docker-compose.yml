@@ -25,6 +25,7 @@ services:
     # host automatically (models/*.onnx and results/ are gitignored).
     volumes:
       - ./:/workspace
+      - /usr/bin/tegrastats:/usr/bin/tegrastats:ro
     working_dir: /workspace
 
     # Keep stdin/tty so `run` sessions are interactive.

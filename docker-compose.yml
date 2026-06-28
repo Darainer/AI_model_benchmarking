@@ -1,0 +1,52 @@
+# Docker Compose for the Jetson Orin benchmark container.
+#   docker compose build          # build the image (after the base pull)
+#   docker compose run --rm benchmark            # default: synthetic benchmark
+#   docker compose run --rm benchmark bash       # interactive shell
+# See the Makefile for shortcuts.
+
+services:
+  benchmark:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ai-model-benchmarking:orin
+
+    # The nvidia container runtime is already registered on this host
+    # (/etc/docker/daemon.json). This grants the container the GPU + the
+    # host's CUDA/cuDNN/TensorRT driver libraries.
+    runtime: nvidia
+    environment:
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: all
+
+    # Bind-mount the repo so code/config edits are live (no rebuild needed).
+    # models/ and results/ are subdirs of this mount, so they persist on the
+    # host automatically (models/*.onnx and results/ are gitignored).
+    volumes:
+      - ./:/workspace
+    working_dir: /workspace
+
+    # Keep stdin/tty so `run` sessions are interactive.
+    stdin_open: true
+    tty: true
+
+    command: python3 scripts/run_benchmark.py
+
+    # --- Camera passthrough: uncomment the relevant block for live capture ---
+    #
+    # USB camera (--input-type usb_camera --device /dev/video0):
+    # devices:
+    #   - /dev/video0:/dev/video0
+    #
+    # CSI camera (--input-type csi_camera) needs the host Argus daemon socket:
+    # volumes:
+    #   - ./:/workspace
+    #   - /tmp/argus_socket:/tmp/argus_socket
+    # devices:
+    #   - /dev/video0:/dev/video0
+    #
+    # On-screen display (output.display: true) needs the host X socket:
+    # environment:
+    #   DISPLAY: ${DISPLAY}
+    # volumes:
+    #   - /tmp/.X11-unix:/tmp/.X11-unix

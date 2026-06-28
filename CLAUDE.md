@@ -30,7 +30,12 @@ models/          # gitignored — populated by download_models.py
 results/         # gitignored — benchmark CSVs written here
 ```
 
-## Quickstart (Jetson Nano / JetPack 4.x+)
+## Docker (recommended on Jetson)
+
+For a reproducible GPU stack, run inside the container instead of a host venv —
+see [DOCKER.md](DOCKER.md). TL;DR: `make pull && make build && make bench`.
+
+## Quickstart (host install — Jetson Nano / JetPack 4.x+)
 
 ```bash
 # 1. Install Python dependencies

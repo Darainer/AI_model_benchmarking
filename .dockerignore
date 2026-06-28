@@ -1,0 +1,26 @@
+# The repo is bind-mounted at runtime; this only trims the build context used
+# for the COPY fallback. Keep it lean.
+.git
+.gitignore
+venv/
+.venv/
+env/
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Large model binaries + results never belong in the image
+models/*.onnx
+models/*.trt
+models/*.engine
+models/*.pt
+models/*.pth
+models/trt_cache/
+results/
+
+.vscode/
+.idea/
+.env

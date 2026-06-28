@@ -1,0 +1,26 @@
+# Pure-python deps added on top of dustynv/l4t-ml.
+#
+# NOT listed here (provided by the base image, must not be reinstalled):
+#   torch, torchvision, onnxruntime-gpu, opencv (CUDA+GStreamer build), numpy, pandas
+#
+# Installed under a constraints file (see Dockerfile) so anything that lists
+# torch/torchvision/opencv as a dependency reuses the Jetson builds instead of
+# pulling generic PyPI wheels.
+
+pyyaml>=6.0
+tqdm>=4.62.0
+requests>=2.26.0
+huggingface_hub>=0.12.0
+
+# SegFormer (source=huggingface) — transformers does not hard-require torch,
+# so this will not drag in a non-Jetson torch.
+transformers>=4.26.0
+
+# UNet / FPN / DeepLabV3+ (source=smp). Depends on torch+torchvision; the
+# constraints file keeps the existing Jetson builds.
+segmentation-models-pytorch>=0.3.0
+
+# NOTE: ultralytics (YOLO) is intentionally omitted from the default image — it
+# hard-depends on opencv-python, which would clobber the GStreamer-enabled
+# OpenCV from the base image. Install it in a separate/throwaway image if needed:
+#   pip install --no-deps ultralytics

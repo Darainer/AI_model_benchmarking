@@ -35,16 +35,8 @@ def ensure_model(config: Dict[str, Any], models_root: Optional[Path] = None) -> 
 
     source = config.get("source", "url")
 
-    # lightglue produces TWO files (extractor + matcher) — check both
-    if source == "lightglue":
-        matcher_path = root / Path(config["local_path_matcher"]).name
-        if local_path.exists() and matcher_path.exists():
-            logger.info("%s: both ONNX files found, skipping export", config["name"])
-            return local_path
-        _download_lightglue(config, extractor_dest=local_path, matcher_dest=matcher_path)
-        return local_path
-
-    # system-installed runtime (cuVSLAM etc.) — create a sentinel, no download
+    # system-installed / pip-installed runtime — create a sentinel, no download.
+    # Used by: cuda_optflow (cv2.cuda), lightglue (pip package), cuvslam (Isaac ROS).
     if source == "system":
         if not local_path.exists():
             local_path.touch()
@@ -231,80 +223,6 @@ def _download_from_smp(config: Dict[str, Any], dest: Path) -> None:
         dynamic_axes={"input": {0: "batch"}, "output": {0: "batch"}},
     )
     logger.info("%s: smp ONNX export done", name)
-
-
-def _download_lightglue(
-    config: Dict[str, Any],
-    extractor_dest: Path,
-    matcher_dest: Path,
-) -> None:
-    """Export SuperPoint (extractor) and LightGlue (matcher) to ONNX.
-
-    The ONNX export helpers live in lightglue.onnx, which is part of the cvg
-    git source but is NOT included in the PyPI 'lightglue' package.  You must
-    install from the git source:
-
-        pip install 'git+https://github.com/cvg/LightGlue.git'
-
-    Verify the submodule is present:
-        python -c 'from lightglue.onnx import OnnxSuperPoint'
-    """
-    try:
-        import torch
-    except ImportError as exc:
-        raise RuntimeError(
-            "torch is required for LightGlue ONNX export.  Install: pip install torch"
-        ) from exc
-
-    try:
-        from lightglue.onnx import OnnxSuperPoint, OnnxLightGlue  # type: ignore
-    except (ImportError, ModuleNotFoundError) as exc:
-        raise RuntimeError(
-            "lightglue.onnx not found.  The PyPI package ('pip install lightglue')\n"
-            "does NOT include the ONNX export helpers.  Install from source:\n"
-            "  pip install 'git+https://github.com/cvg/LightGlue.git'\n"
-            "Then verify: python -c 'from lightglue.onnx import OnnxSuperPoint'"
-        ) from exc
-
-    name        = config["name"]
-    max_kpts    = config.get("max_keypoints", 512)
-    _, _, h, w  = config.get("input_shape", [1, 1, 480, 640])
-
-    extractor_dest.parent.mkdir(parents=True, exist_ok=True)
-
-    # ── SuperPoint ─────────────────────────────────────────────────────────
-    logger.info("%s: exporting SuperPoint → %s", name, extractor_dest)
-    sp = OnnxSuperPoint(max_num_keypoints=max_kpts)
-    dummy_img = torch.zeros(1, 1, h, w)
-    torch.onnx.export(
-        sp, dummy_img, str(extractor_dest),
-        opset_version=17,
-        input_names=["image"],
-        output_names=["keypoints", "scores", "descriptors"],
-        dynamic_axes={"image": {2: "height", 3: "width"}},
-    )
-    logger.info("%s: SuperPoint export done", name)
-
-    # ── LightGlue ──────────────────────────────────────────────────────────
-    logger.info("%s: exporting LightGlue → %s", name, matcher_dest)
-    lg = OnnxLightGlue(extractor_type="superpoint")
-    n           = max_kpts
-    dummy_kpts  = torch.zeros(1, n, 2)
-    dummy_desc  = torch.zeros(1, n, 256)
-    dummy_size  = torch.tensor([[h, w]], dtype=torch.float32)
-    torch.onnx.export(
-        lg,
-        (dummy_kpts, dummy_kpts, dummy_desc, dummy_desc, dummy_size, dummy_size),
-        str(matcher_dest),
-        opset_version=17,
-        input_names=["kpts0", "kpts1", "desc0", "desc1", "image0_size", "image1_size"],
-        output_names=["matches0", "matches1", "mscores0", "mscores1"],
-        dynamic_axes={
-            "kpts0": {1: "n_kpts0"}, "kpts1": {1: "n_kpts1"},
-            "desc0": {1: "n_kpts0"}, "desc1": {1: "n_kpts1"},
-        },
-    )
-    logger.info("%s: LightGlue export done", name)
 
 
 def _download_rfdetr(config: Dict[str, Any], dest: Path) -> None:

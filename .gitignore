@@ -1,0 +1,26 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Downloaded model files (large binaries — commit only configs)
+models/*.onnx
+models/*.trt
+models/*.engine
+models/*.pt
+models/*.pth
+models/trt_cache/
+
+# Benchmark results
+results/
+
+# Environment
+.env
+venv/
+.venv/
+
+# IDE
+.vscode/
+.idea/

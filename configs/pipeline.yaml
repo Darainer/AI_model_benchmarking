@@ -1,0 +1,56 @@
+# Input pipeline configuration for the benchmark runner
+
+input:
+  # type: file | image_dir | usb_camera | csi_camera | synthetic
+  type: synthetic
+
+  # For type: file — path to video file
+  # source: /path/to/video.mp4
+
+  # For type: image_dir — directory of images (jpg/png)
+  # source: /path/to/images/
+  # max_frames: 200  # Optional cap
+
+  # For type: usb_camera
+  # device: /dev/video0
+
+  # For type: csi_camera (Jetson CSI ribbon connector)
+  # flip_method: 0  # 0=none, 2=rotate-180
+
+  # Shared resolution / frame rate
+  width: 1280
+  height: 720
+  fps: 30
+
+  # GStreamer decoding: hw (nvv4l2decoder) or sw (decodebin)
+  # Use hw on Jetson for H.264/H.265 video files
+  decoder: hw
+
+  # synthetic: generate dummy frames for pure inference timing
+  synthetic_frames: 100
+
+output:
+  results_dir: ./results
+  save_frames: false    # Write annotated frames to results_dir
+  display: false        # Show live OpenCV window (requires display)
+  csv: true             # Save per-run timing CSV
+  summary: true         # Print summary table to stdout
+
+benchmark:
+  # Providers tried in order; first available wins.
+  # Jetson recommended: TensorrtExecutionProvider > CUDAExecutionProvider > CPUExecutionProvider
+  onnx_providers:
+    - TensorrtExecutionProvider
+    - CUDAExecutionProvider
+    - CPUExecutionProvider
+
+  # TensorRT EP options (used when TensorrtExecutionProvider is selected)
+  tensorrt_ep_options:
+    trt_fp16_enable: "1"
+    trt_engine_cache_enable: "1"
+    trt_engine_cache_path: "./models/trt_cache"
+    trt_max_workspace_size: "1073741824"  # 1 GB
+
+  # CUDA EP options
+  cuda_ep_options:
+    device_id: "0"

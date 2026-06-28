@@ -2,7 +2,6 @@
 
 Yields (frame_index, bgr_frame) pairs as numpy uint8 arrays.
 """
-import os
 from pathlib import Path
 from typing import Any, Dict, Generator, Optional, Tuple
 import numpy as np
@@ -72,25 +71,40 @@ def _gstreamer(config: Dict[str, Any]) -> FrameStream:
 
     cap = cv2.VideoCapture(pipeline, cv2.CAP_GSTREAMER)
     if not cap.isOpened():
-        # Fallback: try OpenCV native (no GStreamer)
-        logger.warning(
-            "GStreamer pipeline failed to open. Falling back to cv2.VideoCapture native."
+        raise RuntimeError(
+            f"Cannot open video source: {config.get('source')}\n"
+            "GStreamer pipeline failed to open. If using --input-type file, ensure the "
+            "file path is accessible inside the container and the required decoder is "
+            "available.\nTo use software decode instead of hardware, pass: "
+            "--decoder sw"
         )
-        source = config.get("source", 0)
-        cap = cv2.VideoCapture(source)
-        if not cap.isOpened():
-            raise RuntimeError(f"Cannot open video source: {source}")
+
+    ok, first_frame = cap.read()
+    if not ok or first_frame is None:
+        cap.release()
+        decoder = config.get("decoder", "hw")
+        raise RuntimeError(
+            f"GStreamer pipeline opened but produced no frames (decoder={decoder}).\n"
+            + (
+                "Hardware decode (nvv4l2decoder) failed — the Jetson decoder devices "
+                "may not be accessible in this environment.\n"
+                "Pass --decoder sw to use software decode instead. Note: this will "
+                "affect timing results."
+                if decoder == "hw"
+                else "Software decode (decodebin) also failed — check the file format."
+            )
+        )
 
     max_frames: Optional[int] = config.get("max_frames")
     i = 0
     try:
-        while True:
+        yield i, first_frame
+        i += 1
+        while not (max_frames and i >= max_frames):
             ok, frame = cap.read()
             if not ok:
                 break
             yield i, frame
             i += 1
-            if max_frames and i >= max_frames:
-                break
     finally:
         cap.release()

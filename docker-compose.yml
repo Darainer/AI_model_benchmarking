@@ -33,6 +33,15 @@ services:
 
     command: python3 scripts/run_benchmark.py
 
+    # Jetson Orin hardware video decoder (nvv4l2decoder).
+    # /dev/v4l2-nvdec  — V4L2 NVDEC engine (JetPack 6 / L4T r36+)
+    # /dev/nvmap       — NVMAP memory manager (required by nvv4l2decoder)
+    # /dev/media0      — media controller (pipeline negotiation)
+    devices:
+      - /dev/v4l2-nvdec:/dev/v4l2-nvdec
+      - /dev/nvmap:/dev/nvmap
+      - /dev/media0:/dev/media0
+
     # --- Camera passthrough: uncomment the relevant block for live capture ---
     #
     # USB camera (--input-type usb_camera --device /dev/video0):

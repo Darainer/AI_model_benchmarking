@@ -9,6 +9,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      network: host
     image: ai-model-benchmarking:orin
 
     # The nvidia container runtime is already registered on this host

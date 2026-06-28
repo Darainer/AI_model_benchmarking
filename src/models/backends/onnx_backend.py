@@ -51,12 +51,24 @@ class OnnxModel(BaseModel):
 
         self._session = ort.InferenceSession(model_path, sess_options=sess_opts, providers=providers)
 
-        self._input_name = self._session.get_inputs()[0].name
+        inp = self._session.get_inputs()[0]
+        self._input_name = inp.name
         self._output_names = [o.name for o in self._session.get_outputs()]
         self._active_provider = self._session.get_providers()[0]
+
+        # Detect NHWC layout: shape is [N, H, W, C] — last dim is the channel count
+        shape = inp.shape
+        self._nhwc = (
+            len(shape) == 4
+            and isinstance(shape[3], int)
+            and shape[3] in (1, 3, 4)
+            and isinstance(shape[1], int)
+            and shape[1] not in (1, 3, 4)
+        )
         logger.info(
-            "%s: active provider = %s  inputs=%s  outputs=%s",
+            "%s: active provider = %s  inputs=%s  outputs=%s  layout=%s",
             self.name, self._active_provider, self._input_name, self._output_names,
+            "NHWC" if self._nhwc else "NCHW",
         )
 
     def infer(self, frame: np.ndarray) -> List[np.ndarray]:
@@ -64,6 +76,8 @@ class OnnxModel(BaseModel):
             blob = self.preprocess_letterbox(frame)
         else:
             blob = self.preprocess(frame)
+        if self._nhwc:
+            blob = np.transpose(blob, (0, 2, 3, 1))  # NCHW → NHWC
         return self._session.run(self._output_names, {self._input_name: blob})
 
     def backend_name(self) -> str:

@@ -170,7 +170,7 @@ def _download_from_huggingface(config: Dict[str, Any], dest: Path) -> None:
         wrapper,
         dummy,
         str(dest),
-        opset_version=12,
+        opset_version=14,
         input_names=["pixel_values"],
         output_names=["logits"],
         dynamic_axes={"pixel_values": {0: "batch"}, "logits": {0: "batch"}},

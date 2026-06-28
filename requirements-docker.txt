@@ -20,6 +20,13 @@ transformers>=4.26.0
 # constraints file keeps the existing Jetson builds.
 segmentation-models-pytorch>=0.3.0
 
+# RF-DETR object detector (source=rfdetr)
+rfdetr>=1.1.0
+
+# SuperPoint + LightGlue feature matching (source=lightglue)
+# Install from source — the PyPI wheel may omit the onnx submodule.
+git+https://github.com/cvg/LightGlue.git
+
 # NOTE: ultralytics (YOLO) is intentionally omitted from the default image — it
 # hard-depends on opencv-python, which would clobber the GStreamer-enabled
 # OpenCV from the base image. Install it in a separate/throwaway image if needed:

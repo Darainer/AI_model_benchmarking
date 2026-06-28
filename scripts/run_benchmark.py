@@ -62,6 +62,8 @@ def parse_args():
                    help="Camera device node (default: /dev/video0)")
     p.add_argument("--width", type=int, help="Override frame width")
     p.add_argument("--height", type=int, help="Override frame height")
+    p.add_argument("--decoder", choices=["hw", "sw"], default=None,
+                   help="Video decoder: hw (nvv4l2decoder, Jetson) or sw (decodebin/FFmpeg)")
     p.add_argument("--frames", type=int,
                    help="Max frames to process per model (overrides benchmark_runs)")
     p.add_argument("--max-frames", type=int, metavar="N",
@@ -128,6 +130,8 @@ def main():
         input_cfg["width"] = args.width
     if args.height:
         input_cfg["height"] = args.height
+    if args.decoder:
+        input_cfg["decoder"] = args.decoder
 
     bench_cfg = pipeline_cfg.setdefault("benchmark", {})
     if args.providers:

@@ -17,6 +17,9 @@ models/trt_cache/
 # Benchmark results
 results/
 
+# Extracted frame sets (large binaries — regenerate with scripts/extract_frames.sh)
+data/
+
 # Environment
 .env
 venv/

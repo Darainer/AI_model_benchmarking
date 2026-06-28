@@ -2,9 +2,11 @@
 
 ## HW video decode (`nvv4l2decoder`) fails **inside the container** (host is fine)
 
-**Status:** root cause isolated — **container GPU/runtime layer**, *not* the host and
-*not* the decoder hardware. HW decode works on the host. Container fix still to be
-selected (investigation phase). Use `--decoder sw` meanwhile (works, but decode-bound).
+**Status:** root cause isolated (bisect complete) — the **host `nvidia-container-toolkit`
+1.16.2 layer**, *not* the host kernel/hardware and *not* the decoder. HW decode works on
+the host and fails in **every** container on this host (image-independent). Fix is a
+host-level toolkit change (needs sudo); see "Recommended fix" below. Use `--decoder sw`
+meanwhile (works, but decode-bound).
 
 > ⚠️ Always run HW-decode tests **bounded** (`gst-launch … num-buffers=N`, wrapped in
 > `timeout 40 …`, and an outer `timeout` on any `docker` invocation). An unbounded
@@ -81,18 +83,46 @@ benchmark is fully CPU-decoded; classification models cluster at ~21–28 FPS on
 squeezenet hits ~102 FPS on synthetic — **SW decode is the bottleneck**, masking true
 inference throughput. Getting HW decode working in the container matters for validity.
 
-### Next: select the container-side fix (investigation phase — not yet chosen)
-Reproduce with the bounded container command above, then bisect:
-1. **Container-toolkit version** — installed: `nvidia-container-toolkit 1.16.2-1`,
-   `libnvidia-container1 1.16.2-1`, runtime `mode = "auto"`. The
-   `S_EXT_CTRLS for CUDA_GPU_ID` hang is a documented `nvv4l2*`-in-container toolkit
-   regression; validate 1.16.2 against the known-good line for L4T r36.5 (test a different
-   version).
-2. **Runtime mode** — try `mode = "csv"` vs `auto` in
-   `/etc/nvidia-container-runtime/config.toml`.
-3. **GPU/device access for the CUDA_GPU_ID path** — confirm the iGPU control nodes the
-   ioctl touches are fully accessible (cgroup) in the container; compare a minimal
-   `docker run --runtime nvidia <l4t-base>` repro to isolate from our compose setup.
+### Container-side bisect — COMPLETED (2026-06-28)
+Result: the failure is in the **host `nvidia-container-toolkit`/`libnvidia-container`
+1.16.2 layer** and is **image-independent**. Evidence:
+
+| Test | Result |
+|---|---|
+| Host, no container | ✅ decodes, `NvMMLiteOpen`, EOS, exit 0 |
+| dustynv image (our benchmark image) | ❌ `S_EXT_CTRLS for CUDA_GPU_ID`, hang |
+| dustynv + host `libcuda` (CUDA compat dir hidden) | ❌ |
+| dustynv + `--privileged` (all devices/cgroups) | ❌ |
+| **clean `ubuntu:22.04` + toolkit-mounted plugin** | ❌ (identical failure) |
+
+Ruled out as causes: the dustynv image / our Dockerfile; CUDA **compat** lib
+(`/usr/local/cuda/compat`); missing or shadowed userspace libs (all present, mounted from
+host, `libv4l2.so.0 → libnvv4l2.so` identical host vs container); the NV libv4l plugins
+(`libv4l/plugins/nv/*` present and resolve); device/cgroup access (privileged fails too);
+tegra chip-id sysfs probes (ENOENT on the **host** too — normal, falls back to
+`/proc/device-tree/compatible`); nvgpu/dri/nvmap nodes (all CSV-mounted and open fine).
+
+`strace` insight: inside the container `/dev/nvgpu/igpu0/*`, `/dev/nvmap`, `/dev/dri/render*`
+all open successfully; the `S_EXT_CTRLS for CUDA_GPU_ID` line behaves as a **non-fatal
+warning** (it also appears in working SW runs), and under `strace` the pipeline progressed
+to decode-time ioctls instead of hanging — i.e. the real symptom is a **poll/preroll hang**
+that tracing (EINTR) perturbs away. The hang is triggered by the container toolkit's GPU
+setup, not by any missing file or device.
+
+### Recommended fix to apply/test next (all host-level, need sudo)
+1. **Toolkit version** (most likely): installed is `nvidia-container-toolkit` /
+   `libnvidia-container` **1.16.2-1** with runtime `mode = "auto"`. This signature is a
+   documented `nvv4l2*`-in-container toolkit issue; move to the version that matches
+   JetPack 6.2 / L4T r36.5 (test an upgrade, and the `1.18.0` line that fixes the related
+   `1.19.1` regression). Bounded-test after each change with the container command above.
+2. **Runtime mode = csv** (reversible): set `mode = "csv"` in
+   `/etc/nvidia-container-runtime/config.toml` (back it up first) and re-run the bounded
+   container test.
+3. If neither resolves it, file upstream with this A/B (host works, every container fails
+   on 1.16.2) — it is a toolkit bug, not a project/image issue.
+
+Until fixed, `--decoder sw` remains the working path (decode-bound); use
+`--input-type synthetic`/`image_dir` to measure pure inference without the decode cap.
 
 ### Code state
 - `scripts/run_benchmark.py` has a `--decoder {hw,sw}` flag overriding `input.decoder`.

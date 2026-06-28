@@ -64,6 +64,9 @@ def parse_args():
     p.add_argument("--height", type=int, help="Override frame height")
     p.add_argument("--frames", type=int,
                    help="Max frames to process per model (overrides benchmark_runs)")
+    p.add_argument("--max-frames", type=int, metavar="N",
+                   help="Max frames to read from video/camera per model "
+                        "(default: 300 for file inputs, unlimited for cameras)")
 
     # Backend
     p.add_argument("--providers", nargs="+",
@@ -125,6 +128,10 @@ def main():
         input_cfg["width"] = args.width
     if args.height:
         input_cfg["height"] = args.height
+    if args.max_frames is not None:
+        input_cfg["max_frames"] = args.max_frames
+    elif input_cfg.get("type") == "file" and "max_frames" not in input_cfg:
+        input_cfg["max_frames"] = 300  # default: ~10s at 30fps
 
     bench_cfg = pipeline_cfg.setdefault("benchmark", {})
     if args.providers:

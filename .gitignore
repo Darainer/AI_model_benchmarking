@@ -11,6 +11,7 @@ models/*.trt
 models/*.engine
 models/*.pt
 models/*.pth
+models/.cuvslam_sentinel
 models/trt_cache/
 
 # Benchmark results

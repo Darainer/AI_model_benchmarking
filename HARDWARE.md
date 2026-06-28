@@ -94,9 +94,9 @@ Expected improvements over Orin Nano 8 GB (GPU-only, FP16 TensorRT):
 | SuperPoint+LightGlue | ~15 ms | ~12 ms | two ONNX sessions, BW matters |
 | cuVSLAM (480×640) | ~5 ms | ~4 ms | mostly compute |
 
-The 16 GB address space also means you can load the full benchmark suite
-concurrently without memory pressure — relevant when running `--filter` over
-all models in one session.
+The 16 GB address space gives headroom for larger individual models or
+higher-resolution inputs without hitting OOM — relevant if you add bigger
+segmentation backbones (e.g. SegFormer-B2/B5) to `configs/models.yaml`.
 
 ---
 
@@ -121,7 +121,8 @@ Practical implications for this repo:
 - cuVSLAM can be paired with a stereo camera rig at full frame rate alongside
   a detection model — the AGX has headroom for concurrent pipelines.
 - TensorRT engine build times are ~3× faster, reducing the first-run penalty.
-- The 64 GB pool allows loading all 11 benchmark models simultaneously.
+- The 64 GB pool can accommodate very large individual models (e.g. full
+  SegFormer-B5 or large detection transformers) that would OOM on Nano/NX.
 
 The "EGX" designation refers to the AGX Orin being integrated into NVIDIA's
 EGX edge-server reference designs (e.g. IGX Orin for industrial, AGX Orin

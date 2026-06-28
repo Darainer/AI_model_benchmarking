@@ -68,7 +68,7 @@ Edit `configs/models.yaml` and add an entry:
 - name: my_model
   task: classification          # classification | detection | segmentation
   backend: onnx                 # onnx | tensorrt | torch
-  source: url                   # url | torchvision | ultralytics | local
+  source: url                   # url | torchvision | ultralytics | huggingface | smp | local
   url: "https://..."
   local_path: "models/my_model.onnx"
   input_shape: [1, 3, 224, 224]
@@ -79,6 +79,44 @@ Edit `configs/models.yaml` and add an entry:
 ```
 
 Then run `python scripts/download_models.py --filter my_model`.
+
+### Segmentation models
+
+**SegFormer** (transformer, ADE20K 150 classes): requires `pip install transformers torch`.
+On first download the model is exported from HuggingFace to ONNX automatically.
+Output shape: `[N, 150, H/4, W/4]` — upscale with `F.interpolate` for full-res masks.
+
+```yaml
+- name: segformer_b0_ade
+  task: segmentation
+  backend: onnx
+  source: huggingface
+  hf_model_id: "nvidia/segformer-b0-finetuned-ade-512-512"
+  local_path: "models/segformer_b0_ade.onnx"
+  input_shape: [1, 3, 512, 512]
+  input_mean: [0.485, 0.456, 0.406]
+  input_std:  [0.229, 0.224, 0.225]
+  num_classes: 150
+```
+
+**UNet** (classic encoder-decoder): requires `pip install segmentation-models-pytorch torch`.
+`smp_arch` can be `Unet`, `FPN`, `DeepLabV3Plus`, etc.
+
+```yaml
+- name: unet_resnet34
+  task: segmentation
+  backend: onnx
+  source: smp
+  smp_arch: Unet
+  smp_encoder: resnet34
+  smp_encoder_weights: imagenet
+  smp_classes: 21
+  local_path: "models/unet_resnet34.onnx"
+  input_shape: [1, 3, 512, 512]
+  input_mean: [0.485, 0.456, 0.406]
+  input_std:  [0.229, 0.224, 0.225]
+  num_classes: 21
+```
 
 ## TensorRT engine workflow
 

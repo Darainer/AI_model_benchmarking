@@ -5,7 +5,7 @@
 #   name:         Unique identifier used for results and caching
 #   task:         classification | detection | segmentation
 #   backend:      onnx | tensorrt | torch
-#   source:       url | torchvision | ultralytics | local
+#   source:       url | torchvision | ultralytics | huggingface | smp | local
 #   url:          Direct download URL (for source: url)
 #   local_path:   Relative path under models/ directory
 #   input_shape:  [N, C, H, W]
@@ -76,6 +76,38 @@ models:
     conf_threshold: 0.25
     iou_threshold: 0.45
     num_classes: 80
+    warmup_runs: 5
+    benchmark_runs: 50
+
+  # ── Segmentation ───────────────────────────────────────────────────────────
+  # Requires: pip install transformers torch   (first run exports to ONNX)
+  - name: segformer_b0_ade
+    task: segmentation
+    backend: onnx
+    source: huggingface
+    hf_model_id: "nvidia/segformer-b0-finetuned-ade-512-512"
+    local_path: "models/segformer_b0_ade.onnx"
+    input_shape: [1, 3, 512, 512]
+    input_mean: [0.485, 0.456, 0.406]
+    input_std: [0.229, 0.224, 0.225]
+    num_classes: 150   # ADE20K
+    warmup_runs: 5
+    benchmark_runs: 50
+
+  # Requires: pip install segmentation-models-pytorch torch   (first run exports to ONNX)
+  - name: unet_resnet34
+    task: segmentation
+    backend: onnx
+    source: smp
+    smp_arch: Unet
+    smp_encoder: resnet34
+    smp_encoder_weights: imagenet
+    smp_classes: 21    # PASCAL VOC palette; adjust to match your dataset
+    local_path: "models/unet_resnet34.onnx"
+    input_shape: [1, 3, 512, 512]
+    input_mean: [0.485, 0.456, 0.406]
+    input_std: [0.229, 0.224, 0.225]
+    num_classes: 21
     warmup_runs: 5
     benchmark_runs: 50
 

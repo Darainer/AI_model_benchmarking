@@ -50,6 +50,12 @@ def ensure_model(config: Dict[str, Any], models_root: Optional[Path] = None) -> 
     elif source == "ultralytics":
         _download_from_ultralytics(config, local_path)
 
+    elif source == "huggingface":
+        _download_from_huggingface(config, local_path)
+
+    elif source == "smp":
+        _download_from_smp(config, local_path)
+
     elif source == "local":
         raise FileNotFoundError(
             f"Model '{config['name']}' has source=local but file not found: {local_path}"
@@ -99,3 +105,109 @@ def _download_from_ultralytics(config: Dict[str, Any], dest: Path) -> None:
     exported = model.export(format="onnx", imgsz=config["input_shape"][2])
     Path(exported).rename(dest)
     logger.info("%s: exported to %s", name, dest)
+
+
+def _download_from_huggingface(config: Dict[str, Any], dest: Path) -> None:
+    """Download a HuggingFace segmentation model and export it to ONNX.
+
+    The HuggingFace model returns a dataclass output, so we wrap it in a thin
+    nn.Module that exposes only the logits tensor — ONNX export requires plain
+    tensors.
+
+    Install deps: pip install transformers torch
+    """
+    try:
+        import torch
+        from transformers import AutoModelForSemanticSegmentation
+    except ImportError as exc:
+        raise RuntimeError(
+            "transformers and torch required for source=huggingface. "
+            "Install: pip install transformers torch"
+        ) from exc
+
+    model_id = config["hf_model_id"]
+    name = config["name"]
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    logger.info("%s: downloading %s from HuggingFace Hub", name, model_id)
+
+    hf_model = AutoModelForSemanticSegmentation.from_pretrained(model_id)
+    hf_model.eval()
+
+    class _LogitsWrapper(torch.nn.Module):
+        def __init__(self, m: torch.nn.Module):
+            super().__init__()
+            self.m = m
+
+        def forward(self, pixel_values: torch.Tensor) -> torch.Tensor:
+            return self.m(pixel_values=pixel_values).logits
+
+    wrapper = _LogitsWrapper(hf_model)
+    _, _, h, w = config["input_shape"]
+    dummy = torch.zeros(1, 3, h, w)
+
+    logger.info("%s: exporting to ONNX → %s (this may take a minute)", name, dest)
+    torch.onnx.export(
+        wrapper,
+        dummy,
+        str(dest),
+        opset_version=12,
+        input_names=["pixel_values"],
+        output_names=["logits"],
+        dynamic_axes={"pixel_values": {0: "batch"}, "logits": {0: "batch"}},
+    )
+    logger.info("%s: ONNX export done", name)
+
+
+def _download_from_smp(config: Dict[str, Any], dest: Path) -> None:
+    """Build a segmentation_models_pytorch model and export it to ONNX.
+
+    The model uses ImageNet-pretrained weights for the encoder so it can be
+    used directly for transfer learning or as a timing baseline.
+
+    Install deps: pip install segmentation-models-pytorch torch
+    """
+    try:
+        import torch
+        import segmentation_models_pytorch as smp
+    except ImportError as exc:
+        raise RuntimeError(
+            "segmentation_models_pytorch and torch required for source=smp. "
+            "Install: pip install segmentation-models-pytorch torch"
+        ) from exc
+
+    arch = config.get("smp_arch", "Unet")
+    encoder = config.get("smp_encoder", "resnet34")
+    weights = config.get("smp_encoder_weights", "imagenet")
+    classes = config.get("smp_classes", 21)
+    name = config["name"]
+    dest.parent.mkdir(parents=True, exist_ok=True)
+
+    model_cls = getattr(smp, arch, None)
+    if model_cls is None:
+        raise ValueError(f"segmentation_models_pytorch has no architecture '{arch}'")
+
+    logger.info(
+        "%s: building smp.%s(encoder=%s, weights=%s, classes=%d)",
+        name, arch, encoder, weights, classes,
+    )
+    model = model_cls(
+        encoder_name=encoder,
+        encoder_weights=weights,
+        in_channels=3,
+        classes=classes,
+    ).eval()
+
+    _, _, h, w = config["input_shape"]
+    dummy = torch.zeros(1, 3, h, w)
+
+    logger.info("%s: exporting to ONNX → %s", name, dest)
+    torch.onnx.export(
+        model,
+        dummy,
+        str(dest),
+        opset_version=12,
+        input_names=["input"],
+        output_names=["output"],
+        dynamic_axes={"input": {0: "batch"}, "output": {0: "batch"}},
+    )
+    logger.info("%s: ONNX export done", name)

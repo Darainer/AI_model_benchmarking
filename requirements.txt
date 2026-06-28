@@ -8,9 +8,15 @@ requests>=2.26.0
 onnxruntime-gpu>=1.12.0  # Use onnxruntime (CPU only) if no CUDA
 # onnxruntime>=1.12.0
 
-# PyTorch backend (optional)
+# PyTorch backend + model export (required for source=torchvision/huggingface/smp)
 # torch>=1.11.0
 # torchvision>=0.12.0
+
+# SegFormer and other HuggingFace segmentation models (source=huggingface)
+# transformers>=4.26.0
+
+# Classic segmentation models — UNet, FPN, DeepLabV3+ (source=smp)
+# segmentation-models-pytorch>=0.3.0
 
 # TensorRT Python bindings are provided by JetPack on Jetson Nano
 # Install: sudo apt-get install python3-libnvinfer python3-libnvinfer-dev

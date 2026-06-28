@@ -64,6 +64,7 @@ class RunMetrics:
             "mem_bw_avg_gb_s":       self.hw.get("mem_bw_avg_gb_s"),
             "mem_bw_peak_gb_s":      self.hw.get("mem_bw_peak_gb_s"),
             "mem_bw_peak_capacity_gb_s": self.hw.get("mem_bw_peak_capacity_gb_s"),
+            "mem_bw_source":         self.hw.get("mem_bw_source"),
             "gpu_power_avg_mw":      self.hw.get("gpu_power_avg_mw"),
             "gpu_power_peak_mw":     self.hw.get("gpu_power_peak_mw"),
         }

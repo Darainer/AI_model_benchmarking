@@ -303,8 +303,15 @@ class HardwareMonitor:
             "mem_bw_util_peak_pct":     peak(s.mem_bw_util_pct for s in samples),
             "mem_bw_avg_gb_s":          avg(s.mem_bw_gb_s for s in samples),
             "mem_bw_peak_gb_s":         peak(s.mem_bw_gb_s for s in samples),
-            # measured peak via CuPy benchmark (Jetson) or pynvml theoretical (discrete)
+            # Peak memory bandwidth capacity. On Jetson (tegrastats) this is a
+            # measured CuPy device-to-device copy; on discrete GPUs (nvidia-smi)
+            # it is the pynvml theoretical spec. mem_bw_source records which.
             "mem_bw_peak_capacity_gb_s": self._theoretical_gb_s,
+            "mem_bw_source": (
+                None if self._theoretical_gb_s is None
+                else "measured" if self.backend == "tegrastats"
+                else "theoretical"
+            ),
             "gpu_clock_avg_mhz":        avg(s.gpu_clock_mhz for s in samples),
             "gpu_power_avg_mw":         avg(s.gpu_power_mw for s in samples),
             "gpu_power_peak_mw":        peak(s.gpu_power_mw for s in samples),

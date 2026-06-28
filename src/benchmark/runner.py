@@ -181,14 +181,19 @@ def _print_report_table(
             f"  {_fmt(hw.get('gpu_power_avg_mw'), '.0f'):>7}"
         )
 
-    # bandwidth footer (if available)
-    capacity = next(
-        (m.hw.get("mem_bw_peak_capacity_gb_s") for m in metrics if m.hw.get("mem_bw_peak_capacity_gb_s")),
+    # bandwidth footer (if available) — label reflects whether the capacity was
+    # measured (CuPy d2d on Jetson) or theoretical (pynvml spec on discrete GPUs)
+    cap_hw = next(
+        (m.hw for m in metrics if m.hw.get("mem_bw_peak_capacity_gb_s")),
         None,
     )
-    if capacity:
+    if cap_hw:
+        capacity = cap_hw["mem_bw_peak_capacity_gb_s"]
+        label = ("Measured peak mem BW (CuPy d2d)"
+                 if cap_hw.get("mem_bw_source") == "measured"
+                 else "Theoretical peak mem BW (pynvml)")
         print("  " + "─" * (len(h) - 2))
-        print(f"  Measured peak mem BW (CuPy d2d): {capacity:.1f} GB/s")
+        print(f"  {label}: {capacity:.1f} GB/s")
 
     print(bar + "\n")
 

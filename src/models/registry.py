@@ -35,6 +35,10 @@ def build_model(
         from src.models.backends.cuvslam_backend import CuVSLAMModel
         m = CuVSLAMModel(config)
 
+    elif backend == "cuda_optflow":
+        from src.models.backends.optflow_backend import CudaOptFlowModel
+        m = CudaOptFlowModel(config)
+
     else:
         raise ValueError(f"Unknown backend '{backend}' for model '{config['name']}'")
 

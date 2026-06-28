@@ -112,40 +112,60 @@ models:
     benchmark_runs: 50
 
   # ── Feature Matching ────────────────────────────────────────────────────────
-  # Requires: pip install git+https://github.com/cvg/LightGlue.git
-  # Both ONNX files (superpoint.onnx + superpoint_lightglue.onnx) are exported
-  # automatically on first download. Same frame used as both image0/image1 to
-  # benchmark the full pipeline latency at maximum match count.
+  # Requires: pip install lightglue torch
+  # Weights download automatically from HuggingFace on first run.
+  # Same frame is used as both image0/image1 to benchmark the full pipeline
+  # at maximum match count (worst-case LightGlue cost).
   - name: superpoint_lightglue
     task: feature_matching
     backend: lightglue
-    source: lightglue
-    local_path: "models/superpoint.onnx"
-    local_path_matcher: "models/superpoint_lightglue.onnx"
+    source: system                  # weights fetched by lightglue package — no download step
+    local_path: "models/.lightglue_sentinel"
     input_shape: [1, 1, 480, 640]   # grayscale [N, 1, H, W]
     max_keypoints: 512
     warmup_runs: 5
     benchmark_runs: 50
 
-  # ── Visual SLAM ─────────────────────────────────────────────────────────────
-  # Requires: Isaac ROS Visual SLAM (libcuvslam.so system-installed)
-  #   sudo apt install ros-humble-isaac-ros-visual-slam
-  # or container: nvcr.io/nvidia/isaac/ros:aarch64-visual_slam
+  # ── Visual Odometry ─────────────────────────────────────────────────────────
+  # CUDA Lucas-Kanade optical flow + Essential Matrix pose recovery.
+  # Uses OpenCV CUDA (built into all JetPack releases) — no extra packages.
+  # Tracks Shi-Tomasi corners across consecutive frames and estimates relative
+  # camera pose [R|t] per frame. Measures GPU-accelerated feature tracking
+  # latency without requiring the Isaac ROS container.
   #
-  # camera_fx/fy/cx/cy: intrinsics for your specific camera. The defaults
-  # below are generic 640×480 estimates — tune to your calibration file.
-  - name: cuvslam_mono
+  # camera_fx/fy/cx/cy: tune these to match your camera calibration file.
+  # The defaults below are generic 640×480 estimates.
+  - name: cuda_optflow_mono
     task: visual_slam
-    backend: cuvslam
-    source: system                  # library is system-installed, no download
-    local_path: "models/.cuvslam_sentinel"
-    input_shape: [1, 1, 480, 640]   # grayscale, used to set tracker resolution
+    backend: cuda_optflow
+    source: system                  # cv2.cuda is built into JetPack OpenCV
+    local_path: "models/.optflow_sentinel"
+    input_shape: [1, 1, 480, 640]   # grayscale [N, 1, H, W]
     camera_fx: 515.0
     camera_fy: 515.0
     camera_cx: 320.0
     camera_cy: 240.0
-    warmup_runs: 20                 # cuVSLAM needs frames to init its map
+    warmup_runs: 10
     benchmark_runs: 100
+
+  # ── Visual SLAM (Isaac ROS) ──────────────────────────────────────────────────
+  # Requires: libcuvslam.so from Isaac ROS Visual SLAM
+  #   sudo apt install ros-humble-isaac-ros-visual-slam
+  # or container: nvcr.io/nvidia/isaac/ros:aarch64-visual_slam
+  # Skip this entry if not running the Isaac ROS container.
+  #
+  # - name: cuvslam_mono
+  #   task: visual_slam
+  #   backend: cuvslam
+  #   source: system
+  #   local_path: "models/.cuvslam_sentinel"
+  #   input_shape: [1, 1, 480, 640]
+  #   camera_fx: 515.0
+  #   camera_fy: 515.0
+  #   camera_cx: 320.0
+  #   camera_cy: 240.0
+  #   warmup_runs: 20
+  #   benchmark_runs: 100
 
   # ── Segmentation ───────────────────────────────────────────────────────────
   # Requires: pip install transformers torch   (first run exports to ONNX)

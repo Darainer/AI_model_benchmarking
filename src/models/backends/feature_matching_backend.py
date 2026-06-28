@@ -1,17 +1,11 @@
-"""SuperPoint + LightGlue feature matching pipeline backend.
+"""SuperPoint + LightGlue feature matching pipeline — native PyTorch backend.
 
-SuperPoint (grayscale CNN) extracts keypoints and descriptors from each image.
-LightGlue (transformer matcher) matches the descriptors between two images.
+Uses the official lightglue pip package directly, without ONNX export.
+Weights are downloaded automatically from HuggingFace on first use.
 
-For benchmark timing the same frame is used as both image0 and image1 —
-this gives an upper-bound on LightGlue compute (maximum possible match count).
-
-ONNX export (run once via download_models.py):
-    pip install lightglue
-    # lightglue.onnx module required for LightGlue ONNX export:
-    # pip install git+https://github.com/cvg/LightGlue.git
+Install: pip install lightglue
+         pip install torch  (included in the Jetson JetPack base image)
 """
-from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import numpy as np
@@ -22,115 +16,66 @@ from src.utils.logging import get_logger
 logger = get_logger(__name__)
 
 
-def _ensure_batch(arr: np.ndarray, ndim: int = 3) -> np.ndarray:
-    """Add a batch dimension if the array is missing it."""
-    while arr.ndim < ndim:
-        arr = arr[np.newaxis]
-    return arr
-
-
 class LightGlueModel(BaseModel):
-    """Two-stage feature matching: SuperPoint extractor + LightGlue matcher."""
+    """Two-stage feature matching: SuperPoint extractor + LightGlue matcher.
 
-    def __init__(self, config: Dict[str, Any], ort_providers: Optional[List] = None):
+    Both stages run as native PyTorch on CUDA (or CPU as fallback). The same
+    frame is used as both image0 and image1 to time the full pipeline at the
+    maximum possible match count.
+    """
+
+    def __init__(self, config: Dict[str, Any], **kwargs):
         super().__init__(config)
         self._extractor = None
-        self._matcher   = None
-        self._ext_input_name: Optional[str]  = None
-        self._ext_output_names: Optional[List[str]] = None
-        self._mat_input_names:  Optional[List[str]] = None
-        self._mat_output_names: Optional[List[str]] = None
-        self._active_provider: Optional[str] = None
-        self._requested_providers = ort_providers or [
-            "TensorrtExecutionProvider",
-            "CUDAExecutionProvider",
-            "CPUExecutionProvider",
-        ]
+        self._matcher = None
+        self._device: Optional[str] = None
 
-    # ── load ──────────────────────────────────────────────────────────────
     def load(self, model_path: str) -> None:
         try:
-            import onnxruntime as ort
+            import torch
+            from lightglue import LightGlue, SuperPoint
         except ImportError as exc:
-            raise RuntimeError("onnxruntime not found.") from exc
+            raise RuntimeError(
+                "lightglue or torch not found.\n"
+                "Install: pip install lightglue torch"
+            ) from exc
 
-        available = ort.get_available_providers()
-        providers  = [p for p in self._requested_providers if p in available]
-        if not providers:
-            providers = ["CPUExecutionProvider"]
+        self._device = "cuda" if torch.cuda.is_available() else "cpu"
+        max_kpts = self.config.get("max_keypoints", 512)
 
-        opts = ort.SessionOptions()
-        opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
-
-        # ── SuperPoint (extractor) ────────────────────────────────────────
-        self._extractor = ort.InferenceSession(model_path, sess_options=opts, providers=providers)
-        self._ext_input_name   = self._extractor.get_inputs()[0].name
-        self._ext_output_names = [o.name for o in self._extractor.get_outputs()]
-        self._active_provider  = self._extractor.get_providers()[0]
         logger.info(
-            "%s: SuperPoint loaded — input=%s  outputs=%s  provider=%s",
-            self.name, self._ext_input_name, self._ext_output_names, self._active_provider,
+            "%s: loading SuperPoint + LightGlue on %s (max_keypoints=%d)",
+            self.name, self._device, max_kpts,
         )
+        self._extractor = SuperPoint(max_num_keypoints=max_kpts).eval().to(self._device)
+        self._matcher   = LightGlue(features="superpoint").eval().to(self._device)
 
-        # ── LightGlue (matcher) ───────────────────────────────────────────
-        matcher_name = Path(self.config["local_path_matcher"]).name
-        matcher_path = str(Path(model_path).parent / matcher_name)
-        self._matcher = ort.InferenceSession(matcher_path, sess_options=opts, providers=providers)
-        self._mat_input_names  = [i.name for i in self._matcher.get_inputs()]
-        self._mat_output_names = [o.name for o in self._matcher.get_outputs()]
-        logger.info(
-            "%s: LightGlue loaded — inputs=%s  outputs=%s",
-            self.name, self._mat_input_names, self._mat_output_names,
-        )
-
-    # ── preprocessing ──────────────────────────────────────────────────────
-    def _to_gray(self, frame: np.ndarray) -> np.ndarray:
-        """BGR uint8 → float32 [1, 1, H, W] in [0, 1]."""
+    def infer(self, frame: np.ndarray) -> List[np.ndarray]:
         import cv2
+        import torch
+
         _, _, h, w = self.input_shape
         gray = cv2.cvtColor(cv2.resize(frame, (w, h)), cv2.COLOR_BGR2GRAY)
-        return (gray.astype(np.float32) / 255.0)[np.newaxis, np.newaxis]  # [1, 1, H, W]
+        # SuperPoint expects [1, 1, H, W] float32 in [0, 1]
+        img = (
+            torch.from_numpy(gray)
+            .float()
+            .div(255.0)
+            .unsqueeze(0)
+            .unsqueeze(0)
+            .to(self._device)
+        )
 
-    # ── inference ──────────────────────────────────────────────────────────
-    def infer(self, frame: np.ndarray) -> List[np.ndarray]:
-        gray = self._to_gray(frame)
-        h, w = int(gray.shape[2]), int(gray.shape[3])
+        with torch.no_grad():
+            feats0 = self._extractor.extract(img)
+            feats1 = self._extractor.extract(img)  # same frame — maximises match count
+            matches01 = self._matcher({"image0": feats0, "image1": feats1})
 
-        # Run SuperPoint twice (same frame used as both images for timing)
-        raw0 = self._extractor.run(self._ext_output_names, {self._ext_input_name: gray})
-        raw1 = self._extractor.run(self._ext_output_names, {self._ext_input_name: gray})
-
-        # SuperPoint outputs: [keypoints [N,2], scores [N], descriptors [N,256]]
-        # Ensure batch dimension is present
-        kpts0, scores0, desc0 = [_ensure_batch(x, 3) for x in raw0]
-        kpts1, scores1, desc1 = [_ensure_batch(x, 3) for x in raw1]
-
-        img_size = np.array([[h, w]], dtype=np.float32)
-
-        # Build LightGlue input dict by matching on known field name patterns
-        mat_in: Dict[str, np.ndarray] = {}
-        for name in self._mat_input_names:
-            n = name.lower()
-            if   "kpts0"   in n: mat_in[name] = kpts0
-            elif "kpts1"   in n: mat_in[name] = kpts1
-            elif "desc0"   in n: mat_in[name] = desc0
-            elif "desc1"   in n: mat_in[name] = desc1
-            elif "size0"   in n or ("image0" in n and "size" in n): mat_in[name] = img_size
-            elif "size1"   in n or ("image1" in n and "size" in n): mat_in[name] = img_size
-            else:
-                logger.warning("%s: unknown LightGlue input '%s' — skipping", self.name, name)
-
-        return self._matcher.run(self._mat_output_names, mat_in)
-
-    def warmup(self, runs: int = 10) -> None:
-        dummy = np.zeros((self.input_shape[2], self.input_shape[3], 3), dtype=np.uint8)
-        for _ in range(runs):
-            self.infer(dummy)
+        # matches01['matches'] is [K, 2] in current LightGlue; some versions use 'matches0'
+        out = matches01.get("matches", matches01.get("matches0"))
+        if out is not None and hasattr(out, "cpu"):
+            return [out.cpu().numpy()]
+        return [np.empty((0, 2), dtype=np.int32)]
 
     def backend_name(self) -> str:
-        short = {
-            "TensorrtExecutionProvider": "ORT/TRT",
-            "CUDAExecutionProvider":     "ORT/CUDA",
-            "CPUExecutionProvider":      "ORT/CPU",
-        }
-        return f"LightGlue/{short.get(self._active_provider or '', 'unknown')}"
+        return f"LightGlue/{(self._device or 'unknown').upper()}"

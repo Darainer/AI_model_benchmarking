@@ -1,10 +1,12 @@
-"""Benchmark runner — feeds frames from the input pipeline into each model."""
+"""Benchmark runner — feeds video/image frames into each model and reports stats."""
 import csv
+import datetime
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from src.benchmark.metrics import RunMetrics, Timer, sample_gpu_stats
+from src.benchmark.hardware_monitor import HardwareMonitor
+from src.benchmark.metrics import RunMetrics, Timer
 from src.input.frame_source import open_source
 from src.models.downloader import ensure_model
 from src.models.registry import build_model
@@ -19,9 +21,20 @@ def run_all(
     results_dir: Optional[Path] = None,
     models_root: Optional[Path] = None,
 ) -> List[RunMetrics]:
-    """Download (if needed), load, and benchmark every model in the list."""
-    out_cfg = pipeline_config.get("output", {})
+    """Download (if needed), load, warmup, and benchmark every model.
+
+    For each model:
+      1. Download / export checkpoint if not cached locally
+      2. Load the backend and run warmup passes
+      3. Start HardwareMonitor in background
+      4. Feed frames from the configured source, time each inference
+      5. Stop monitor, attach hw stats, print per-model summary
+    End: print consolidated report table and save CSV.
+    """
+    out_cfg   = pipeline_config.get("output", {})
     bench_cfg = pipeline_config.get("benchmark", {})
+    input_cfg = pipeline_config.get("input", {})
+
     results_dir = results_dir or Path(out_cfg.get("results_dir", "./results"))
     results_dir.mkdir(parents=True, exist_ok=True)
 
@@ -31,12 +44,14 @@ def run_all(
         "CPUExecutionProvider",
     ])
 
+    monitor = HardwareMonitor(interval_ms=bench_cfg.get("monitor_interval_ms", 200))
     all_metrics: List[RunMetrics] = []
 
     for model_cfg in models_config:
         name = model_cfg["name"]
         logger.info("─── %s ───", name)
 
+        # ── load ────────────────────────────────────────────────────────
         try:
             model_path = ensure_model(model_cfg, models_root=models_root)
             model = build_model(model_cfg, model_path, ort_providers=ort_providers)
@@ -44,10 +59,10 @@ def run_all(
             logger.error("Failed to load %s: %s", name, exc)
             continue
 
-        warmup_runs = model_cfg.get("warmup_runs", 10)
+        warmup_runs    = model_cfg.get("warmup_runs", 10)
         benchmark_runs = model_cfg.get("benchmark_runs", 100)
 
-        logger.info("%s: warming up (%d passes)…", name, warmup_runs)
+        logger.info("%s: warmup (%d passes)…", name, warmup_runs)
         model.warmup(warmup_runs)
 
         metrics = RunMetrics(
@@ -56,44 +71,132 @@ def run_all(
             task=model_cfg["task"],
         )
 
-        input_cfg = pipeline_config.get("input", {})
-        frame_iter = open_source(input_cfg)
-
-        logger.info("%s: benchmarking (%d passes)…", name, benchmark_runs)
+        # ── benchmark ────────────────────────────────────────────────────
+        logger.info("%s: benchmarking (%d frames)…", name, benchmark_runs)
+        monitor.start()
         run_start = time.perf_counter()
-        frames_seen = 0
 
-        for frame_idx, frame in frame_iter:
+        for _, frame in open_source(input_cfg):
             with Timer() as t:
                 model.infer(frame)
             metrics.record(t.elapsed_ms)
-            frames_seen += 1
-            if frames_seen >= benchmark_runs:
+            if metrics.frames_processed >= benchmark_runs:
                 break
 
         metrics.wall_time_s = time.perf_counter() - run_start
+        monitor.stop()
+        metrics.hw = monitor.summary()
 
-        gpu = sample_gpu_stats()
-        if gpu:
-            metrics.gpu_memory_mb = gpu["gpu_memory_mb"]
-            metrics.gpu_util_pct = gpu["gpu_util_pct"]
-
-        metrics.print_summary()
+        _print_model_summary(metrics)
         all_metrics.append(metrics)
 
-    if out_cfg.get("csv", True):
-        _save_csv(all_metrics, results_dir / "benchmark_results.csv")
+    # ── consolidated report ──────────────────────────────────────────────
+    if all_metrics:
+        _print_report_table(all_metrics, input_cfg, monitor.backend)
+        if out_cfg.get("csv", True):
+            _save_csv(all_metrics, results_dir / "benchmark_results.csv")
 
     return all_metrics
 
 
+# ── per-model inline summary ───────────────────────────────────────────────
+
+def _print_model_summary(m: RunMetrics) -> None:
+    hw = m.hw
+    bw_str = ""
+    if hw.get("mem_bw_avg_gb_s") is not None:
+        bw_str = (f"  BW      : avg {hw['mem_bw_avg_gb_s']:.1f} GB/s  "
+                  f"peak {hw['mem_bw_peak_gb_s']:.1f} GB/s")
+        if hw.get("mem_bw_theoretical_gb_s"):
+            bw_str += f"  (theoretical {hw['mem_bw_theoretical_gb_s']:.1f} GB/s)"
+
+    print(f"\n{'='*64}")
+    print(f"  {m.model_name}  [{m.backend}]  task={m.task}")
+    print(f"  Latency : avg {m.avg_latency_ms:.1f} ms  "
+          f"p50 {m.p50_latency_ms:.1f} ms  "
+          f"p95 {m.p95_latency_ms:.1f} ms  "
+          f"p99 {m.p99_latency_ms:.1f} ms")
+    print(f"  FPS     : {m.throughput_fps:.1f}  ({m.frames_processed} frames in {m.wall_time_s:.1f}s)")
+    if hw.get("gpu_util_avg_pct") is not None:
+        print(f"  GPU     : avg {hw['gpu_util_avg_pct']:.0f}%  peak {hw['gpu_util_peak_pct']:.0f}%"
+              + (f"  @ {hw['gpu_clock_avg_mhz']:.0f} MHz" if hw.get("gpu_clock_avg_mhz") else ""))
+    if hw.get("gpu_mem_used_peak_mb") is not None:
+        print(f"  Mem     : avg {hw['gpu_mem_used_avg_mb']:.0f} MB  "
+              f"peak {hw['gpu_mem_used_peak_mb']:.0f} MB"
+              + (f"  / {hw['gpu_mem_total_mb']:.0f} MB total" if hw.get("gpu_mem_total_mb") else ""))
+    if bw_str:
+        print(bw_str)
+    print(f"{'='*64}")
+
+
+# ── consolidated end-of-run table ─────────────────────────────────────────
+
+def _fmt(v, fmt=".1f", fallback="  —  "):
+    return format(v, fmt) if v is not None else fallback
+
+_COL_W = 22  # model name column width
+
+def _print_report_table(
+    metrics: List[RunMetrics],
+    input_cfg: Dict[str, Any],
+    monitor_backend: str,
+) -> None:
+    ts   = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    src  = input_cfg.get("source", input_cfg.get("type", "synthetic"))
+    bar  = "=" * 100
+
+    print(f"\n{bar}")
+    print(f"  Benchmark Report — {ts}")
+    print(f"  Input  : {src}  |  Monitor: {monitor_backend}")
+    print(bar)
+
+    # header
+    h = (f"  {'Model':<{_COL_W}}  {'Backend':<10}  {'Task':<14}  "
+         f"{'Frms':>5}  {'avg ms':>7}  {'p95 ms':>7}  {'FPS':>6}  "
+         f"{'GPU%':>5}  {'Mem MB':>7}  {'BW avg':>7}  {'BW peak':>8}")
+    print(h)
+    print("  " + "─" * (len(h) - 2))
+
+    for m in metrics:
+        hw = m.hw
+        print(
+            f"  {m.model_name:<{_COL_W}}"
+            f"  {m.backend:<10}"
+            f"  {m.task:<14}"
+            f"  {m.frames_processed:>5}"
+            f"  {_fmt(m.avg_latency_ms):>7}"
+            f"  {_fmt(m.p95_latency_ms):>7}"
+            f"  {_fmt(m.throughput_fps):>6}"
+            f"  {_fmt(hw.get('gpu_util_avg_pct'), '.0f'):>5}"
+            f"  {_fmt(hw.get('gpu_mem_used_peak_mb'), '.0f'):>7}"
+            f"  {_fmt(hw.get('mem_bw_avg_gb_s')):>6} GB/s"
+            f"  {_fmt(hw.get('mem_bw_peak_gb_s')):>6} GB/s"
+        )
+
+    # bandwidth footer (if available)
+    bw_vals = [m.hw.get("mem_bw_avg_gb_s") for m in metrics if m.hw.get("mem_bw_avg_gb_s")]
+    theoretical = next(
+        (m.hw.get("mem_bw_theoretical_gb_s") for m in metrics if m.hw.get("mem_bw_theoretical_gb_s")),
+        None,
+    )
+    if bw_vals:
+        overall_avg  = sum(bw_vals) / len(bw_vals)
+        overall_peak = max(m.hw.get("mem_bw_peak_gb_s", 0) for m in metrics)
+        print("  " + "─" * (len(h) - 2))
+        bw_line = f"  Memory Bandwidth across all models: avg {overall_avg:.1f} GB/s  peak {overall_peak:.1f} GB/s"
+        if theoretical:
+            bw_line += f"  (theoretical {theoretical:.1f} GB/s)"
+        print(bw_line)
+
+    print(bar + "\n")
+
+
+# ── CSV export ─────────────────────────────────────────────────────────────
+
 def _save_csv(metrics_list: List[RunMetrics], path: Path) -> None:
-    if not metrics_list:
-        return
-    rows = [m.summary_dict() for m in metrics_list]
-    fieldnames = list(rows[0].keys())
+    rows = [m.flat_dict() for m in metrics_list]
     with open(path, "w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
         writer.writeheader()
         writer.writerows(rows)
-    logger.info("Results saved to %s", path)
+    logger.info("Results saved → %s", path)

@@ -2,11 +2,11 @@
 """Main entry point for the inference benchmark pipeline.
 
 Examples:
-  # Synthetic frames (no camera required)
-  python scripts/run_benchmark.py
+  # MP4 video (most common use case — HW-decoded on Jetson via nvv4l2decoder)
+  python scripts/run_benchmark.py --video /path/to/clip.mp4
 
-  # Video file via GStreamer (HW decode on Jetson)
-  python scripts/run_benchmark.py --input-type file --source /path/to/video.mp4
+  # Synthetic frames (no camera / file required — pure inference timing)
+  python scripts/run_benchmark.py
 
   # CSI camera (Jetson ribbon connector)
   python scripts/run_benchmark.py --input-type csi_camera
@@ -18,9 +18,9 @@ Examples:
   python scripts/run_benchmark.py --input-type image_dir --source /path/to/images/
 
   # Run only specific models
-  python scripts/run_benchmark.py --filter mobilenet_v2 yolov8n
+  python scripts/run_benchmark.py --video clip.mp4 --filter mobilenet_v2 yolov8n
 
-  # Force CPU (no GPU)
+  # Force CPU (no GPU / no CUDA)
   python scripts/run_benchmark.py --providers CPUExecutionProvider
 """
 import argparse
@@ -50,6 +50,9 @@ def parse_args():
                    help="Path to pipeline YAML (default: configs/pipeline.yaml)")
 
     # Input overrides
+    p.add_argument("--video", metavar="PATH",
+                   help="MP4 / video file to benchmark against (shorthand for "
+                        "--input-type file --source PATH)")
     p.add_argument("--input-type",
                    choices=["synthetic", "file", "image_dir", "usb_camera", "csi_camera"],
                    help="Override input.type from pipeline config")
@@ -107,6 +110,11 @@ def main():
 
     # Apply CLI overrides to pipeline config
     input_cfg = pipeline_cfg.setdefault("input", {})
+
+    # --video is the preferred shorthand for MP4 benchmarking
+    if args.video:
+        input_cfg["type"] = "file"
+        input_cfg["source"] = args.video
     if args.input_type:
         input_cfg["type"] = args.input_type
     if args.source:

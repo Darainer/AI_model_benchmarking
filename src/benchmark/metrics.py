@@ -1,7 +1,8 @@
-"""Latency and throughput metrics collected during a benchmark run."""
+"""Latency, throughput, and hardware metrics for a single benchmark run."""
 import time
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import Dict, List, Optional, Any
+
 import numpy as np
 
 
@@ -14,9 +15,8 @@ class RunMetrics:
     frames_processed: int = 0
     wall_time_s: float = 0.0
 
-    # Optional hardware counters (populated if nvidia-smi / tegrastats available)
-    gpu_memory_mb: Optional[float] = None
-    gpu_util_pct: Optional[float] = None
+    # Populated by HardwareMonitor.summary() after inference completes
+    hw: Dict[str, Any] = field(default_factory=dict)
 
     def record(self, latency_ms: float) -> None:
         self.latencies_ms.append(latency_ms)
@@ -42,62 +42,36 @@ class RunMetrics:
     def throughput_fps(self) -> float:
         return self.frames_processed / self.wall_time_s if self.wall_time_s > 0 else 0.0
 
-    def summary_dict(self) -> dict:
-        return {
-            "model": self.model_name,
-            "backend": self.backend,
-            "task": self.task,
-            "frames": self.frames_processed,
-            "avg_latency_ms": round(self.avg_latency_ms, 2),
-            "p50_latency_ms": round(self.p50_latency_ms, 2),
-            "p95_latency_ms": round(self.p95_latency_ms, 2),
-            "p99_latency_ms": round(self.p99_latency_ms, 2),
-            "throughput_fps": round(self.throughput_fps, 2),
-            "gpu_memory_mb": self.gpu_memory_mb,
-            "gpu_util_pct": self.gpu_util_pct,
+    def flat_dict(self) -> dict:
+        """Flat dict suitable for CSV row — merges latency fields with hw stats."""
+        d = {
+            "model":           self.model_name,
+            "backend":         self.backend,
+            "task":            self.task,
+            "frames":          self.frames_processed,
+            "avg_latency_ms":  round(self.avg_latency_ms, 2),
+            "p50_latency_ms":  round(self.p50_latency_ms, 2),
+            "p95_latency_ms":  round(self.p95_latency_ms, 2),
+            "p99_latency_ms":  round(self.p99_latency_ms, 2),
+            "throughput_fps":  round(self.throughput_fps, 2),
+            # hardware (None when monitor unavailable)
+            "gpu_util_avg_pct":      self.hw.get("gpu_util_avg_pct"),
+            "gpu_util_peak_pct":     self.hw.get("gpu_util_peak_pct"),
+            "gpu_mem_used_avg_mb":   self.hw.get("gpu_mem_used_avg_mb"),
+            "gpu_mem_used_peak_mb":  self.hw.get("gpu_mem_used_peak_mb"),
+            "mem_bw_avg_gb_s":       self.hw.get("mem_bw_avg_gb_s"),
+            "mem_bw_peak_gb_s":      self.hw.get("mem_bw_peak_gb_s"),
+            "mem_bw_theoretical_gb_s": self.hw.get("mem_bw_theoretical_gb_s"),
         }
-
-    def print_summary(self) -> None:
-        d = self.summary_dict()
-        print(f"\n{'='*60}")
-        print(f"  Model   : {d['model']}")
-        print(f"  Backend : {d['backend']}")
-        print(f"  Task    : {d['task']}")
-        print(f"  Frames  : {d['frames']}")
-        print(f"  Latency : avg={d['avg_latency_ms']} ms  "
-              f"p50={d['p50_latency_ms']} ms  "
-              f"p95={d['p95_latency_ms']} ms  "
-              f"p99={d['p99_latency_ms']} ms")
-        print(f"  FPS     : {d['throughput_fps']}")
-        if d["gpu_memory_mb"] is not None:
-            print(f"  GPU Mem : {d['gpu_memory_mb']:.0f} MB")
-        print(f"{'='*60}")
+        return d
 
 
 class Timer:
-    """Simple wall-clock timer using time.perf_counter."""
-
-    def __init__(self):
-        self._start: float = 0.0
+    """Context-manager wall-clock timer (perf_counter precision)."""
 
     def __enter__(self):
-        self._start = time.perf_counter()
+        self._t0 = time.perf_counter()
         return self
 
     def __exit__(self, *_):
-        self.elapsed_ms = (time.perf_counter() - self._start) * 1000.0
-
-
-def sample_gpu_stats() -> Optional[dict]:
-    """Try to read GPU stats via nvidia-smi or tegrastats (non-blocking)."""
-    import subprocess
-    try:
-        out = subprocess.check_output(
-            ["nvidia-smi", "--query-gpu=memory.used,utilization.gpu",
-             "--format=csv,noheader,nounits"],
-            timeout=2,
-        ).decode().strip()
-        mem_mb, util_pct = out.split(",")
-        return {"gpu_memory_mb": float(mem_mb), "gpu_util_pct": float(util_pct)}
-    except Exception:
-        return None
+        self.elapsed_ms = (time.perf_counter() - self._t0) * 1_000.0

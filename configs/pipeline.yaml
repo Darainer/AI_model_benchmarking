@@ -54,3 +54,7 @@ benchmark:
   # CUDA EP options
   cuda_ep_options:
     device_id: "0"
+
+  # HardwareMonitor sampling interval (ms).
+  # Lower = more granular stats but slightly more CPU overhead.
+  monitor_interval_ms: 200

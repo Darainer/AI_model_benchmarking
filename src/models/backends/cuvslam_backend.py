@@ -186,12 +186,15 @@ class CuVSLAMModel(BaseModel):
         logger.info("%s: cuVSLAM tracker initialised (%dx%d)", self.name, w, h)
 
     # ── inference ──────────────────────────────────────────────────────────
-    def infer(self, frame: np.ndarray) -> List[np.ndarray]:
+    def prepare(self, frame: np.ndarray) -> np.ndarray:
         import cv2
-
+        # Resize + grayscale + contiguous uint8 — untimed preprocessing.
         _, _, h, w = self.input_shape
         gray = cv2.cvtColor(cv2.resize(frame, (w, h)), cv2.COLOR_BGR2GRAY)
-        gray = np.ascontiguousarray(gray, dtype=np.uint8)
+        return np.ascontiguousarray(gray, dtype=np.uint8)
+
+    def infer_prepared(self, gray: np.ndarray) -> List[np.ndarray]:
+        _, _, h, w = self.input_shape
 
         img = _CuvSLAMImage(
             timestamp_ns=self._frame_idx * 33_000_000,   # synthetic ~30 fps timestamps

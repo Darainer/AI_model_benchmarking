@@ -54,12 +54,10 @@ class RunMetrics:
         activations add more), and the figure that matters on bandwidth-bound SoCs.
         Compare against hw['mem_bw_peak_capacity_gb_s'] (the measured device ceiling).
 
-        NOTE: avg_latency_ms is timed around the full model.infer() call, which runs
-        in-model preprocessing (resize / colour-convert / normalize) before the backend
-        executes. So this denominator is end-to-end (preprocess + inference), not the
-        isolated backend execution time — making the figure an *extra-conservative*
-        lower bound. A model could be more bandwidth-bound at the kernel level than this
-        number suggests; do not read a low value as proof a model is not bandwidth-bound."""
+        avg_latency_ms is timed around model.infer_prepared() only — preprocessing
+        (resize / colour-convert / normalize) and host→device staging run in
+        model.prepare() outside the timer — so this denominator is the isolated
+        backend execution time, i.e. weight bytes per inference."""
         if not self.model_bytes or not self.latencies_ms:
             return None
         avg_s = (self.avg_latency_ms / 1000.0)
@@ -81,8 +79,8 @@ class RunMetrics:
             "p99_latency_ms":  round(self.p99_latency_ms, 2),
             "throughput_fps":  round(self.throughput_fps, 2),
             # memory: weight bytes streamed/inference and the resulting effective DRAM BW.
-            # eff_mem_bw uses end-to-end infer() latency (incl. in-model preprocessing),
-            # so it is an extra-conservative lower bound — see eff_mem_bw_gb_s docstring.
+            # eff_mem_bw uses pure inference latency (preprocessing excluded — see
+            # eff_mem_bw_gb_s docstring and the prepare()/infer_prepared() split).
             "model_weight_mb":      round(self.model_bytes / 1e6, 2) if self.model_bytes else None,
             "eff_mem_bw_gb_s":      self.eff_mem_bw_gb_s,
             # hardware (None when monitor unavailable)

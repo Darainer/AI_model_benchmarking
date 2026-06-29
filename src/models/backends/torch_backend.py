@@ -32,11 +32,17 @@ class TorchModel(BaseModel):
         self._model.eval()
         logger.info("%s: model loaded", self.name)
 
-    def infer(self, frame: np.ndarray) -> List[np.ndarray]:
+    def prepare(self, frame: np.ndarray):
         import torch
-        blob = torch.from_numpy(self.preprocess(frame)).to(self._device)
+        # Preprocess + host→device copy happen here, outside the timer.
+        return torch.from_numpy(self.preprocess(frame)).to(self._device)
+
+    def infer_prepared(self, blob) -> List[np.ndarray]:
+        import torch
         with torch.no_grad():
             outputs = self._model(blob)
+        # .cpu() forces the CUDA stream to finish, so the timer captures the full
+        # forward pass even though kernel launches are async.
         if isinstance(outputs, torch.Tensor):
             return [outputs.cpu().numpy()]
         return [o.cpu().numpy() for o in outputs]

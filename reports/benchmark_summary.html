@@ -71,43 +71,43 @@
 
   <!-- ───────────────────────── PIPELINE ───────────────────────── -->
   <h2>1 · The benchmarking pipeline</h2>
-  <p>Each model is driven through the same five stages. The <b>preprocess + inference</b>
-  stages sit inside the latency timer (both run inside <code>model.infer()</code>); the
-  surrounding stages read the frame and record what the hardware did.</p>
+  <p>Each model is driven through the same five stages. Only the <b>inference</b> stage sits
+  inside the latency timer; preprocessing runs in <code>model.prepare()</code> just before it,
+  outside the timer, so the recorded latency is pure model execution.</p>
 
   <div class="flow">
     <div class="stage"><h4>① Source</h4><p>100 pre-decoded JPEGs (<code>image_dir</code>) read via <code>cv2.imread</code>.</p></div>
     <div class="arrow">→</div>
-    <div class="stage timed"><h4>② Preprocess ⏱</h4><p><b>Timed.</b> Resize → RGB → normalize → CHW → batch (letterbox for detectors) — runs inside <code>model.infer()</code>.</p></div>
+    <div class="stage"><h4>② Preprocess</h4><p>Resize → RGB → normalize → CHW → batch (letterbox for detectors) + host→device copy — <code>model.prepare()</code>, <b>not timed</b>.</p></div>
     <div class="arrow">→</div>
-    <div class="stage timed"><h4>③ Inference ⏱</h4><p><b>Timed.</b> Backend execution on GPU via TensorRT-EP / CUDA.</p></div>
+    <div class="stage timed"><h4>③ Inference ⏱</h4><p><b>Timed.</b> <code>model.infer_prepared()</code> — backend execution only, on GPU via TensorRT-EP / CUDA.</p></div>
     <div class="arrow">→</div>
     <div class="stage"><h4>④ Metrics</h4><p>Per-frame latency → p50/p95/p99 + avg; effective BW from weights/latency.</p></div>
     <div class="arrow">→</div>
     <div class="stage"><h4>⑤ HW monitor</h4><p><code>tegrastats</code> + GPU <code>devfreq</code> clock; one-time CuPy BW ceiling probe.</p></div>
   </div>
-  <p class="small">⏱ The green-outlined stages are inside the latency timer (the timer wraps
-  <code>model.infer()</code>, which preprocesses then runs the backend). The image read /
-  JPEG-decode work runs in the loop but is <i>not</i> charged to latency — which is why
-  latency and end-to-end FPS diverge (see §2).</p>
+  <p class="small">⏱ Only the green-outlined stage is inside the latency timer. The image read /
+  JPEG-decode <i>and</i> the resize/normalize preprocessing run in the loop but are <i>not</i>
+  charged to latency — which is why latency and end-to-end FPS diverge (see §2). Each backend's
+  <code>infer_prepared()</code> returns host arrays, so async GPU kernels are fully captured.</p>
 
   <!-- ───────────────────────── METHODOLOGY ───────────────────────── -->
   <h2>2 · How to read the numbers</h2>
   <div class="panel callout">
     <p style="margin:0 0 6px"><b>Read latency, not FPS, for model speed.</b></p>
-    <p style="margin:0">The timer wraps <code>model.infer()</code> (in-model preprocess +
-    backend execution), so <b>avg / p95 latency are decode-independent</b> — they exclude the
-    JPEG read/decode but <b>include the resize/normalize preprocessing</b>. The <code>FPS</code> column
+    <p style="margin:0">The timer wraps <code>model.infer_prepared()</code> only — preprocessing
+    runs in <code>model.prepare()</code> outside it — so <b>avg / p95 latency are pure inference</b>:
+    no JPEG read/decode and no resize/normalize. The <code>FPS</code> column
     is <code>frames ÷ wall-clock</code> and the wall clock includes reading + JPEG-decoding
     each 1920×1080 image (<code>cv2.imread</code>, CPU) every iteration — so <b>FPS here is
     image-read-bound, not inference-bound.</b> The <b>inf/s</b> column (1000 ÷ avg-latency)
     is the honest model throughput.</p>
   </div>
   <p class="legend"><b>Legend.</b>
-  <b>avg/p95 ms</b> = per-inference latency (timed) ·
-  <b>inf/s</b> = 1000/avg (preprocess + inference) ·
+  <b>avg/p95 ms</b> = per-inference latency (timed, preprocessing excluded) ·
+  <b>inf/s</b> = 1000/avg (pure inference) ·
   <b>FPS</b> = end-to-end incl. image read (read-bound here) ·
-  <b>effBW</b> = weight bytes streamed ÷ infer latency, incl. preprocess (lower-bound DRAM demand, §4) ·
+  <b>effBW</b> = weight bytes streamed ÷ inference latency (lower-bound DRAM demand, §4) ·
   <b>GPU MHz</b> = avg GPU clock (devfreq) ·
   <b>Mem</b> peak footprint · <b>Pwr</b> CPU+GPU+CV rail.</p>
 
@@ -188,9 +188,9 @@
       <tr><td>segformer_b0_ade</td><td class="mono">7.5 MB</td><td class="mono">0.1 GB/s</td><td class="mono">&lt;1%</td></tr>
     </tbody>
   </table>
-  <p class="small">✦ effective BW = FP16 weight bytes streamed per inference ÷ avg infer latency
-  (timed end-to-end, so it includes in-model preprocessing → an extra-conservative lower bound;
-  a low value is <i>not</i> proof a model isn't bandwidth-bound at the kernel level).
+  <p class="small">✦ effective BW = FP16 weight bytes streamed per inference ÷ avg inference latency
+  (timed with preprocessing excluded — pure backend execution). It counts weight traffic only,
+  so it remains a lower bound: activation traffic adds more and isn't captured here.
   <b>Measured device ceiling this run: 43.2 GB/s</b> (CuPy device-to-device copy; ~68 GB/s
   theoretical). Note it read <b>20.4 GB/s on an earlier run</b> — the ceiling itself moves
   with the EMC clock / power state, which is why power mode must be pinned (below).</p>
@@ -265,9 +265,9 @@
 
   <hr>
   <p class="small">Generated from <code>results/benchmark_2026-06-28_22-25-21.csv</code>.
-  Latency = <code>model.infer()</code> end-to-end (in-model preprocess + backend execution,
-  decode-independent); FPS is end-to-end and read-bound for this image_dir run; effective BW
-  is a weight-only lower bound, made further conservative by the preprocessing in latency. Device
+  Latency = pure inference (<code>model.infer_prepared()</code> only — preprocessing and decode
+  excluded); FPS is end-to-end and read-bound for this image_dir run; effective BW is a
+  weight-only lower bound. Device
   specs are vendor-published approximations.</p>
 
 </div>

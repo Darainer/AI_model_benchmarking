@@ -75,16 +75,20 @@ class TensorRTModel(BaseModel):
             len(self._host_outputs),
         )
 
-    def infer(self, frame: np.ndarray) -> List[np.ndarray]:
-        import pycuda.driver as cuda
-
+    def prepare(self, frame: np.ndarray):
+        # Preprocess and stage into the pinned host input buffer — untimed.
         blob = self.preprocess(frame).ravel()
         np.copyto(self._host_inputs[0], blob)
+        return None  # input already staged in self._host_inputs
+
+    def infer_prepared(self, _prepared) -> List[np.ndarray]:
+        import pycuda.driver as cuda
+
         cuda.memcpy_htod_async(self._cuda_inputs[0], self._host_inputs[0], self._stream)
         self._context.execute_async_v2(bindings=self._bindings, stream_handle=self._stream.handle)
         for host, device in zip(self._host_outputs, self._cuda_outputs):
             cuda.memcpy_dtoh_async(host, device, self._stream)
-        self._stream.synchronize()
+        self._stream.synchronize()  # block until the engine + copies finish
         return [np.copy(o) for o in self._host_outputs]
 
     def backend_name(self) -> str:

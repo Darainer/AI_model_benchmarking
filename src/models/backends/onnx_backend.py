@@ -71,13 +71,18 @@ class OnnxModel(BaseModel):
             "NHWC" if self._nhwc else "NCHW",
         )
 
-    def infer(self, frame: np.ndarray) -> List[np.ndarray]:
+    def prepare(self, frame: np.ndarray) -> np.ndarray:
         if self.config["task"] == "detection":
             blob = self.preprocess_letterbox(frame)
         else:
             blob = self.preprocess(frame)
         if self._nhwc:
             blob = np.transpose(blob, (0, 2, 3, 1))  # NCHW → NHWC
+        return blob
+
+    def infer_prepared(self, blob: np.ndarray) -> List[np.ndarray]:
+        # ORT's run() is synchronous and returns host arrays, so the timed region
+        # is exactly one backend execution with no preprocessing in it.
         return self._session.run(self._output_names, {self._input_name: blob})
 
     def backend_name(self) -> str:

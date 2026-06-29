@@ -95,9 +95,15 @@ class LightGlueModel(BaseModel):
             return [out.cpu().numpy()]
         return [np.empty((0, 2), dtype=np.int32)]
 
-    def infer(self, frame: np.ndarray) -> List[np.ndarray]:
-        img = self.to_device(self.preprocess_cpu(frame))
+    def prepare(self, frame: np.ndarray):
+        # CPU preprocess + host→device copy — untimed. What's left for the timer
+        # is the pure SuperPoint + LightGlue GPU execution.
+        return self.to_device(self.preprocess_cpu(frame))
+
+    def infer_prepared(self, img) -> List[np.ndarray]:
         feats0, feats1 = self.extract(img)
+        # postprocess() ends in .cpu(), which blocks on the CUDA stream, so the
+        # timer captures the full SuperPoint+LightGlue forward pass.
         return self.postprocess(self.match(feats0, feats1))
 
     @property

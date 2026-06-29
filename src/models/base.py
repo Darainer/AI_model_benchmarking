@@ -18,9 +18,33 @@ class BaseModel(ABC):
     def load(self, model_path: str) -> None:
         """Load model weights / engine from disk."""
 
+    def prepare(self, frame: np.ndarray) -> Any:
+        """Preprocess a raw uint8 BGR frame into backend-ready model inputs.
+
+        Runs OUTSIDE the inference timer (resize / colour-convert / normalize /
+        host→device staging). The benchmark times only :meth:`infer_prepared`, so
+        this work is deliberately excluded from the reported latency. Subclasses
+        override to return whatever their backend feeds to the model.
+
+        Args:
+            frame: uint8 BGR image, shape (H, W, 3).
+        """
+        if self.task == "detection":
+            return self.preprocess_letterbox(frame)
+        return self.preprocess(frame)
+
     @abstractmethod
+    def infer_prepared(self, prepared: Any) -> List[np.ndarray]:
+        """Run ONLY the model on already-prepared inputs and return host outputs.
+
+        This is the region the benchmark times — preprocessing is excluded (it
+        happened in :meth:`prepare`). Returning host-resident numpy arrays forces
+        any queued device work to complete, so async GPU kernels are charged here
+        rather than leaking into the next stage.
+        """
+
     def infer(self, frame: np.ndarray) -> List[np.ndarray]:
-        """Run inference on a single pre-processed frame.
+        """Full preprocess + inference. Convenience for warmup / ad-hoc callers.
 
         Args:
             frame: uint8 BGR image, shape (H, W, 3).
@@ -28,6 +52,7 @@ class BaseModel(ABC):
         Returns:
             List of raw output tensors as numpy arrays.
         """
+        return self.infer_prepared(self.prepare(frame))
 
     def preprocess(self, frame: np.ndarray) -> np.ndarray:
         """Resize → RGB → normalize → CHW → batch."""

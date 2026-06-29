@@ -157,7 +157,7 @@ def _print_model_summary(m: RunMetrics) -> None:
         cap = hw.get("mem_bw_peak_capacity_gb_s")
         wt = f"{m.model_bytes/1e6:.1f} MB weights" if m.model_bytes else ""
         pct = f"  ≈{100*m.eff_mem_bw_gb_s/cap:.0f}% of {cap:.0f} GB/s ceiling" if cap else ""
-        print(f"  Mem BW  : {m.eff_mem_bw_gb_s:.1f} GB/s effective ({wt} / latency, lower bound){pct}")
+        print(f"  Mem BW  : {m.eff_mem_bw_gb_s:.1f} GB/s effective ({wt} / infer latency incl. preprocess, lower bound){pct}")
     if hw.get("gpu_util_avg_pct") is not None:
         print(f"  GPU     : avg {hw['gpu_util_avg_pct']:.0f}%  peak {hw['gpu_util_peak_pct']:.0f}%"
               + (f"  @ {hw['gpu_clock_avg_mhz']:.0f} MHz" if hw.get("gpu_clock_avg_mhz") else ""))

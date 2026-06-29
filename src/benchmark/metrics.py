@@ -16,6 +16,10 @@ class RunMetrics:
     wall_time_s: float = 0.0
     run_timestamp: str = ""
 
+    # Weight bytes the model must stream from DRAM per inference (FP16 params for
+    # ONNX/TRT models, file size otherwise). Used for the effective-bandwidth roofline.
+    model_bytes: Optional[int] = None
+
     # Populated by HardwareMonitor.summary() after inference completes
     hw: Dict[str, Any] = field(default_factory=dict)
 
@@ -43,6 +47,19 @@ class RunMetrics:
     def throughput_fps(self) -> float:
         return self.frames_processed / self.wall_time_s if self.wall_time_s > 0 else 0.0
 
+    @property
+    def eff_mem_bw_gb_s(self) -> Optional[float]:
+        """Lower-bound effective DRAM bandwidth = weight bytes streamed per inference
+        / avg latency. Real lower bound (weights are read at least once per inference;
+        activations add more), and the figure that matters on bandwidth-bound SoCs.
+        Compare against hw['mem_bw_peak_capacity_gb_s'] (the measured device ceiling)."""
+        if not self.model_bytes or not self.latencies_ms:
+            return None
+        avg_s = (self.avg_latency_ms / 1000.0)
+        if avg_s <= 0:
+            return None
+        return round(self.model_bytes / avg_s / 1e9, 2)
+
     def flat_dict(self) -> dict:
         """Flat dict suitable for CSV row — merges latency fields with hw stats."""
         d = {
@@ -56,6 +73,9 @@ class RunMetrics:
             "p95_latency_ms":  round(self.p95_latency_ms, 2),
             "p99_latency_ms":  round(self.p99_latency_ms, 2),
             "throughput_fps":  round(self.throughput_fps, 2),
+            # memory: weight bytes streamed/inference and the resulting effective DRAM BW
+            "model_weight_mb":      round(self.model_bytes / 1e6, 2) if self.model_bytes else None,
+            "eff_mem_bw_gb_s":      self.eff_mem_bw_gb_s,
             # hardware (None when monitor unavailable)
             "gpu_util_avg_pct":      self.hw.get("gpu_util_avg_pct"),
             "gpu_util_peak_pct":     self.hw.get("gpu_util_peak_pct"),
@@ -65,6 +85,8 @@ class RunMetrics:
             "mem_bw_peak_gb_s":      self.hw.get("mem_bw_peak_gb_s"),
             "mem_bw_peak_capacity_gb_s": self.hw.get("mem_bw_peak_capacity_gb_s"),
             "mem_bw_source":         self.hw.get("mem_bw_source"),
+            "gpu_clock_avg_mhz":     self.hw.get("gpu_clock_avg_mhz"),
+            "gpu_clock_peak_mhz":    self.hw.get("gpu_clock_peak_mhz"),
             "gpu_power_avg_mw":      self.hw.get("gpu_power_avg_mw"),
             "gpu_power_peak_mw":     self.hw.get("gpu_power_peak_mw"),
         }

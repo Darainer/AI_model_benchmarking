@@ -15,6 +15,35 @@ from src.utils.logging import get_logger
 logger = get_logger(__name__)
 
 
+def _weight_bytes(model_path) -> Optional[int]:
+    """Bytes the model must stream from DRAM per inference (lower bound = weights).
+
+    For ONNX we count initializer elements × 2 (the TensorRT EP runs FP16, so 2
+    bytes/param); for other artifacts we fall back to the file size on disk. This
+    feeds RunMetrics.eff_mem_bw_gb_s — weights / latency — a real lower bound on the
+    memory bandwidth each model demands, which is the binding constraint on Jetson.
+    """
+    from pathlib import Path
+    p = Path(model_path)
+    if not p.exists():
+        return None
+    if p.suffix == ".onnx":
+        try:
+            import onnx
+            m = onnx.load(str(p), load_external_data=False)
+            params = 0
+            for init in m.graph.initializer:
+                n = 1
+                for d in init.dims:
+                    n *= d
+                params += n
+            if params > 0:
+                return params * 2  # FP16 engine → 2 bytes/param
+        except Exception as exc:
+            logger.debug("weight-byte count via onnx failed for %s: %s", p, exc)
+    return p.stat().st_size
+
+
 def run_all(
     models_config: List[Dict[str, Any]],
     pipeline_config: Dict[str, Any],
@@ -74,6 +103,7 @@ def run_all(
             backend=model.backend_name(),
             task=model_cfg["task"],
             run_timestamp=run_ts,
+            model_bytes=_weight_bytes(model_path),
         )
 
         # ── benchmark ────────────────────────────────────────────────────
@@ -123,6 +153,11 @@ def _print_model_summary(m: RunMetrics) -> None:
           f"p95 {m.p95_latency_ms:.1f} ms  "
           f"p99 {m.p99_latency_ms:.1f} ms")
     print(f"  FPS     : {m.throughput_fps:.1f}  ({m.frames_processed} frames in {m.wall_time_s:.1f}s)")
+    if m.eff_mem_bw_gb_s is not None:
+        cap = hw.get("mem_bw_peak_capacity_gb_s")
+        wt = f"{m.model_bytes/1e6:.1f} MB weights" if m.model_bytes else ""
+        pct = f"  ≈{100*m.eff_mem_bw_gb_s/cap:.0f}% of {cap:.0f} GB/s ceiling" if cap else ""
+        print(f"  Mem BW  : {m.eff_mem_bw_gb_s:.1f} GB/s effective ({wt} / latency, lower bound){pct}")
     if hw.get("gpu_util_avg_pct") is not None:
         print(f"  GPU     : avg {hw['gpu_util_avg_pct']:.0f}%  peak {hw['gpu_util_peak_pct']:.0f}%"
               + (f"  @ {hw['gpu_clock_avg_mhz']:.0f} MHz" if hw.get("gpu_clock_avg_mhz") else ""))
@@ -152,7 +187,7 @@ def _print_report_table(
 ) -> None:
     ts   = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     src  = input_cfg.get("source", input_cfg.get("type", "synthetic"))
-    bar  = "=" * 100
+    bar  = "=" * 108
 
     print(f"\n{bar}")
     print(f"  Benchmark Report — {ts}")
@@ -161,7 +196,7 @@ def _print_report_table(
 
     # header
     h = (f"  {'Model':<{_COL_W}}  {'Backend':<10}  {'Task':<14}  "
-         f"{'Frms':>5}  {'avg ms':>7}  {'p95 ms':>7}  {'FPS':>6}  "
+         f"{'Frms':>5}  {'avg ms':>7}  {'p95 ms':>7}  {'FPS':>6}  {'effGB/s':>7}  "
          f"{'GPU%':>5}  {'Mem MB':>7}  {'Pwr mW':>7}")
     print(h)
     print("  " + "─" * (len(h) - 2))
@@ -176,6 +211,7 @@ def _print_report_table(
             f"  {_fmt(m.avg_latency_ms):>7}"
             f"  {_fmt(m.p95_latency_ms):>7}"
             f"  {_fmt(m.throughput_fps):>6}"
+            f"  {_fmt(m.eff_mem_bw_gb_s):>7}"
             f"  {_fmt(hw.get('gpu_util_avg_pct'), '.0f'):>5}"
             f"  {_fmt(hw.get('gpu_mem_used_peak_mb'), '.0f'):>7}"
             f"  {_fmt(hw.get('gpu_power_avg_mw'), '.0f'):>7}"

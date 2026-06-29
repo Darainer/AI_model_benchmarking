@@ -12,6 +12,7 @@ Typical usage::
     mon.stop()
     stats = mon.summary()
 """
+import glob
 import re
 import subprocess
 import threading
@@ -52,6 +53,21 @@ _TS_GR3D = re.compile(r"GR3D(?:_FREQ)? (\d+)%(?:@(\d+))?")
 _TS_EMC  = re.compile(r"EMC(?:_FREQ)? (\d+)%@(\d+)")
 # GPU-related power rail (CPU+GPU+CV subsystem); format: "VDD_CPU_GPU_CV CURmW/AVGmW"
 _TS_VDD_GPU = re.compile(r"VDD_CPU_GPU_CV (\d+)mW/(\d+)mW")
+
+# GPU clock: tegrastats GR3D_FREQ on Orin/JP6 omits the @clock, so read it from the
+# GPU devfreq node (cur_freq is in Hz). Board-specific address → glob the *.gpu node.
+_GPU_DEVFREQ_GLOB = "/sys/class/devfreq/*.gpu/cur_freq"
+
+
+def _read_gpu_clock_mhz() -> Optional[float]:
+    """Read current GPU clock (MHz) from the GPU devfreq node, or None."""
+    try:
+        for p in glob.glob(_GPU_DEVFREQ_GLOB):
+            with open(p) as f:
+                return round(int(f.read().strip()) / 1e6, 1)
+    except Exception:
+        return None
+    return None
 
 
 def _parse_tegrastats(line: str) -> HardwareSample:
@@ -242,6 +258,9 @@ class HardwareMonitor:
                 if self._stop.is_set():
                     break
                 sample = _parse_tegrastats(line)
+                # GR3D_FREQ on Orin/JP6 has no @clock — fill from the GPU devfreq node.
+                if sample.gpu_clock_mhz is None:
+                    sample.gpu_clock_mhz = _read_gpu_clock_mhz()
                 with self._lock:
                     self._samples.append(sample)
         except Exception as exc:
@@ -313,6 +332,7 @@ class HardwareMonitor:
                 else "theoretical"
             ),
             "gpu_clock_avg_mhz":        avg(s.gpu_clock_mhz for s in samples),
+            "gpu_clock_peak_mhz":       peak(s.gpu_clock_mhz for s in samples),
             "gpu_power_avg_mw":         avg(s.gpu_power_mw for s in samples),
             "gpu_power_peak_mw":        peak(s.gpu_power_mw for s in samples),
         }

@@ -165,6 +165,35 @@ trtexec --onnx=models/.lightglue_dla_sentinel_backbone.onnx \
 > view. The benchmark CSV captures GR3D% (GPU) — the DLA side is confirmed
 > qualitatively via the tools above.
 
+### 4. The concurrency demo — proving the headroom pays off
+
+The point of dropping GPU% is to fit a *second* model. `scripts/demo_dla_concurrency.py`
+measures exactly that. It runs a GPU co-tenant (a detector/classifier) in three
+scenarios on a shared frame stream while sampling GPU%:
+
+```bash
+python scripts/demo_dla_concurrency.py                       # mobilenet_v2 co-tenant
+python scripts/demo_dla_concurrency.py --gpu-model rf_detr_base --duration 10
+```
+
+```
+  Scenario                                       GPU% avg  GPU% pk
+  ──────────────────────────────────────────────────────────────
+  A. mobilenet_v2 alone                             ~55       ~70
+      └ mobilenet_v2                                ~620 fps
+  B. + superpoint_lightglue (all-GPU)               ~95       ~99   ← GPU saturated
+      └ mobilenet_v2                                ~310 fps        ← halved by contention
+      └ superpoint_lightglue                         ~60 fps
+  C. + superpoint_lightglue_dla_pipeline (DLA)      ~70       ~85   ← backbone left the GPU
+      └ mobilenet_v2                                ~480 fps        ← keeps more of its FPS
+      └ superpoint_lightglue_dla_pipeline            ~60 fps
+```
+
+(Illustrative shape, **not measured** — numbers will differ on real silicon.)
+The B→C deltas the script prints are the deliverable: **lower combined GPU%**
+and **higher retained co-tenant FPS** when the backbone is on the DLA. Off-Jetson
+the DLA path falls back to GPU, C≈B, and the script says so.
+
 ## Expected outcome (estimate, not measured)
 
 - **Latency:** roughly flat, possibly a small win from the FP16 matcher. The
@@ -184,6 +213,7 @@ trtexec --onnx=models/.lightglue_dla_sentinel_backbone.onnx \
 | `src/models/backends/feature_matching_pipeline_backend.py` | `lightglue_dla_pipeline` — overlapped consecutive-frame streaming. |
 | `src/models/registry.py` | Registers both backends. |
 | `configs/models.yaml` | `superpoint_lightglue_dla` + `superpoint_lightglue_dla_pipeline`. |
+| `scripts/demo_dla_concurrency.py` | A/B/C concurrency demo — measures GPU headroom freed for a 2nd model. |
 | `docs/DLA_SUPERPOINT_PROTOTYPE.md` | This document. |
 
 ### Config knobs

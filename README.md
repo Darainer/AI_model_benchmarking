@@ -5,6 +5,9 @@ checkpoints, feed them a standardized MP4 video (or camera stream), and get
 per-frame latency, FPS, GPU utilization, and memory bandwidth stats — all from
 a single command.
 
+> **CI on real hardware:** Jetson devices are registered as self-hosted GitHub
+> Actions runners so benchmarks run on actual GPUs. See [CI.md](CI.md).
+
 ## What's in the box
 
 | Layer | What it does |

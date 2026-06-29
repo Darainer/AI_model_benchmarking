@@ -1,0 +1,62 @@
+name: Jetson Benchmark
+
+# Runs the Dockerized inference benchmark on self-hosted NVIDIA Jetson
+# runners. See CI.md for how the runners are registered.
+#
+# These jobs target machines labelled `self-hosted` + `jetson`, so any
+# registered Jetson that is idle will pick up the run.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:        # manual "Run workflow" button
+  schedule:
+    - cron: "0 3 * * *"     # nightly synthetic benchmark at 03:00 UTC
+
+# Don't let two runs pile onto the same device for the same ref.
+concurrency:
+  group: jetson-bench-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  benchmark:
+    name: Synthetic benchmark (Jetson)
+    runs-on: [self-hosted, jetson]
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Show device info
+        run: |
+          uname -a
+          (tegrastats --interval 1000 | head -n 1) || true
+          docker info --format 'runtimes: {{json .Runtimes}}' || true
+
+      - name: Ensure base image is present
+        # The dustynv base is ~10-15 GB; it persists on the self-hosted
+        # runner after the first pull, so this is a fast no-op afterwards.
+        run: make pull
+
+      - name: Build benchmark image
+        run: make build
+
+      - name: GPU sanity check (execution providers)
+        run: make gpu-check
+
+      - name: Run synthetic benchmark
+        # Synthetic frames only — no HW video decode. HW decode currently
+        # hangs inside the container (see open_issues.md) and an unbounded
+        # nvv4l2decoder failure can wedge the device, so CI stays synthetic.
+        run: make bench
+
+      - name: Upload benchmark results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-results-${{ runner.name }}-${{ github.run_id }}
+          path: results/*.csv
+          if-no-files-found: warn
+          retention-days: 30

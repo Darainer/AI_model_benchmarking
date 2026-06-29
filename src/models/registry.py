@@ -31,6 +31,20 @@ def build_model(
         from src.models.backends.feature_matching_backend import LightGlueModel
         m = LightGlueModel(config, ort_providers=ort_providers)
 
+    elif backend == "lightglue_dla":
+        # PROTOTYPE — SuperPoint conv backbone on NVDLA (Orin NX), keypoint
+        # post-processing + LightGlue matcher on the GPU. Single-frame self-match
+        # (benchmark parity). Falls back to full-GPU if no DLA is available.
+        from src.models.backends.feature_matching_dla_backend import LightGlueDLAModel
+        m = LightGlueDLAModel(config, ort_providers=ort_providers)
+
+    elif backend == "lightglue_dla_pipeline":
+        # PROTOTYPE — overlapped streaming pipeline: backbone(N) on the DLA runs
+        # concurrently with postproc+matcher(N-1) on the GPU, matching consecutive
+        # frames. The DLA/GPU concurrency variant. Falls back to serial if no DLA.
+        from src.models.backends.feature_matching_pipeline_backend import LightGlueDLAPipelineModel
+        m = LightGlueDLAPipelineModel(config, ort_providers=ort_providers)
+
     elif backend == "cuvslam":
         from src.models.backends.cuvslam_backend import CuVSLAMModel
         m = CuVSLAMModel(config)

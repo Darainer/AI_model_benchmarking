@@ -5,7 +5,13 @@ COMPOSE := docker compose
 SVC     := benchmark
 RUN     := $(COMPOSE) run --rm $(SVC)
 
-.PHONY: build pull gpu-check shell download bench bench-cpu bench-file clean
+.PHONY: build pull gpu-check shell download bench bench-cpu bench-file clean venv
+
+## Host venv setup (Jetson) — inherits the JetPack GPU stack, then installs the
+## shared deps via scripts/install_deps.sh (the same script the Docker build
+## uses). Use this path for HW-decoded video/camera runs. See VENV.md.
+venv:
+	bash scripts/setup_venv.sh
 
 ## Build the image (run `make pull` first for the one-time base download)
 build:

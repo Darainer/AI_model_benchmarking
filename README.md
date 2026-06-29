@@ -68,6 +68,7 @@ make shell
 
 | Target | Command |
 |---|---|
+| `make venv` | Host venv setup (shares deps with Docker — see [VENV.md](VENV.md)) |
 | `make pull` | Pull base image (`dustynv/l4t-ml:r36.4.0`) |
 | `make build` | Build `ai-model-benchmarking:orin` |
 | `make gpu-check` | Verify GPU providers inside container |
@@ -77,6 +78,24 @@ make shell
 | `make bench-cpu` | Force CPU-only (no CUDA) |
 | `make shell` | Interactive bash session |
 | `make clean` | Remove the built image |
+
+---
+
+## Quickstart — Host venv (Orin / JetPack 6 — best for video/camera)
+
+A `--system-site-packages` venv inherits the JetPack GPU stack and installs the
+project deps via the **same shared script the Docker build uses**
+(`scripts/install_deps.sh`), so the two environments stay consistent. Prefer
+this path for HW-decoded **video/camera** runs — the host NVDEC path works
+directly, with no container-toolkit layer to break `nvv4l2decoder`. Full
+details and the two-layer design in [VENV.md](VENV.md).
+
+```bash
+make venv                 # verify host GPU stack → create .venv → install deps
+source .venv/bin/activate
+python scripts/download_models.py
+python scripts/run_benchmark.py --video /path/to/clip.mp4
+```
 
 ---
 

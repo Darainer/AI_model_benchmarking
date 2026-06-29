@@ -32,38 +32,94 @@ echo "================================================================"
 echo " Host venv setup — AI Model Benchmarking (Jetson)"
 echo "================================================================"
 
-# --- Prerequisite check: the GPU stack must exist on the HOST first ----------
-# The venv inherits these via --system-site-packages; it cannot create them.
-echo "==> Checking host GPU stack (required before creating the venv)"
-required_missing=0
-optional_missing=0
+# --- Probe the GPU stack: host now, Docker base for comparison ---------------
+# The venv inherits the host GPU stack via --system-site-packages; it cannot
+# create it. We probe the host with scripts/_env_report.py and probe the Docker
+# base with the SAME script (piped into `docker run`), then show them side by
+# side so it's obvious whether the venv will match the container.
+REPORT="$REPO_ROOT/scripts/_env_report.py"
 
-check() {  # $1=label  $2=python-import-test  $3=fix-hint  $4=required(1/0)
-  if "$PY" -c "$2" >/dev/null 2>&1; then
+echo "==> Probing host GPU stack"
+HOST_REPORT="$("$PY" "$REPORT" 2>/dev/null || true)"
+declare -A HOST
+while IFS='=' read -r k v; do [ -n "$k" ] && HOST["$k"]="$v"; done <<< "$HOST_REPORT"
+
+echo "==> Probing Docker base for comparison (best effort)"
+DOCKER_REPORT=""
+DOCKER_SRC="(not available)"
+if command -v docker >/dev/null 2>&1; then
+  for img in ai-model-benchmarking:orin dustynv/l4t-ml:r36.4.0; do
+    docker image inspect "$img" >/dev/null 2>&1 || continue
+    # Try the nvidia runtime first so capability flags (cuda/providers) are
+    # accurate; fall back to the default runtime for version-only info.
+    DOCKER_REPORT="$(docker run --rm -i --runtime=nvidia "$img" python3 - < "$REPORT" 2>/dev/null \
+                     || docker run --rm -i "$img" python3 - < "$REPORT" 2>/dev/null || true)"
+    if [ -n "$DOCKER_REPORT" ]; then DOCKER_SRC="$img"; break; fi
+  done
+else
+  DOCKER_SRC="(docker not installed)"
+fi
+declare -A DOCK
+while IFS='=' read -r k v; do [ -n "$k" ] && DOCK["$k"]="$v"; done <<< "$DOCKER_REPORT"
+
+# --- Render the comparison table ---------------------------------------------
+echo
+echo "  Dependency comparison — host venv vs Docker"
+echo "  Docker source: $DOCKER_SRC"
+printf "  %-22s %-20s %-20s %s\n" "component" "host (venv)" "docker" ""
+printf "  %-22s %-20s %-20s %s\n" "----------------------" "--------------------" "--------------------" "----"
+row() {  # $1=label  $2=key
+  local h="${HOST[$2]:--}" d="${DOCK[$2]:--}" mark=""
+  if [ -z "$DOCKER_REPORT" ]; then mark=""
+  elif [ "$h" = "$d" ]; then mark="✓ match"
+  else mark="✗ differ"; fi
+  printf "  %-22s %-20s %-20s %s\n" "$1" "$h" "$d" "$mark"
+}
+row "python"             python
+row "numpy"              numpy
+row "torch"              torch
+row "torchvision"        torchvision
+row "onnxruntime"        onnxruntime
+row "opencv"             opencv
+row "tensorrt"           tensorrt
+row "pandas"             pandas
+row "torch CUDA"         torch_cuda
+row "ORT CUDA provider"  ort_cuda
+row "ORT TRT provider"   ort_trt
+row "opencv GStreamer"   opencv_gstreamer
+row "opencv CUDA"        opencv_cuda
+if [ -z "$DOCKER_REPORT" ]; then
+  echo
+  echo "  (No Docker image probed — '$DOCKER_SRC'. Run 'make pull && make build'"
+  echo "   to compare against the container, or 'make pull' for the base image.)"
+fi
+
+# --- Verdict: required components must be present on the host -----------------
+echo
+echo "==> Host prerequisite verdict"
+required_missing=0
+verdict() {  # $1=label  $2=condition(0=ok)  $3=required(1/0)  $4=fix-hint
+  if [ "$2" = "ok" ]; then
     echo "  [ok]   $1"
+  elif [ "$3" = "1" ]; then
+    echo "  [MISS] $1 (required) — $4"
+    required_missing=1
   else
-    if [ "$4" = "1" ]; then
-      echo "  [MISS] $1 (required) — $3"
-      required_missing=1
-    else
-      echo "  [warn] $1 (optional) — $3"
-      optional_missing=1
-    fi
+    echo "  [warn] $1 (optional) — $4"
   fi
 }
-
-check "onnxruntime-gpu (CUDA provider)" \
-  "import onnxruntime as o; assert 'CUDAExecutionProvider' in o.get_available_providers()" \
-  "install the Jetson onnxruntime-gpu wheel (Jetson Zoo / NVIDIA index)" 1
-check "OpenCV built WITH GStreamer" \
-  "import cv2, re; m=re.search(r'GStreamer:\s*(YES|NO)', cv2.getBuildInformation()); assert m and m.group(1)=='YES'" \
-  "sudo apt-get install python3-opencv  (JetPack GStreamer build; do NOT pip install opencv-python)" 1
-check "torch (CUDA)" \
-  "import torch; assert torch.cuda.is_available()" \
-  "install the Jetson torch wheel (only needed for source=torchvision/huggingface/smp)" 0
-check "tensorrt bindings" \
-  "import tensorrt" \
-  "sudo apt-get install python3-libnvinfer  (only needed for backend=tensorrt)" 0
+[ "${HOST[ort_cuda]:-}" = "yes" ] && r1=ok || r1=no
+[ "${HOST[opencv_gstreamer]:-}" = "yes" ] && r2=ok || r2=no
+[ "${HOST[torch_cuda]:-}" = "yes" ] && r3=ok || r3=no
+[ "${HOST[tensorrt]:--}" != "-" ] && r4=ok || r4=no
+verdict "onnxruntime-gpu (CUDA provider)" "$r1" 1 \
+  "install the Jetson onnxruntime-gpu wheel (Jetson Zoo / NVIDIA index)"
+verdict "OpenCV built WITH GStreamer" "$r2" 1 \
+  "sudo apt-get install python3-opencv  (JetPack build; do NOT pip install opencv-python)"
+verdict "torch (CUDA)" "$r3" 0 \
+  "install the Jetson torch wheel (only for source=torchvision/huggingface/smp)"
+verdict "tensorrt bindings" "$r4" 0 \
+  "sudo apt-get install python3-libnvinfer  (only for backend=tensorrt)"
 
 if [ "$required_missing" -ne 0 ]; then
   echo

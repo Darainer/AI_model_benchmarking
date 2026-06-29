@@ -43,6 +43,35 @@ python scripts/run_benchmark.py --video /path/to/clip.mp4   # HW-decoded
 
 `make venv` is just `bash scripts/setup_venv.sh`.
 
+## Dependency check + Docker comparison
+
+Before creating the venv, `setup_venv.sh` probes the host GPU stack and prints a
+side-by-side comparison against the Docker base, so you can see whether the venv
+will match the container. Both columns are produced by the same probe
+(`scripts/_env_report.py`) — the host runs it directly; the Docker column comes
+from piping it into `docker run` against `ai-model-benchmarking:orin` (falling
+back to `dustynv/l4t-ml:r36.4.0`), using the nvidia runtime when available so
+the capability flags are accurate.
+
+```
+  Dependency comparison — host venv vs Docker
+  Docker source: ai-model-benchmarking:orin
+  component              host (venv)          docker
+  ---------------------- -------------------- -------------------- ----
+  torch                  2.3.0                2.3.0                ✓ match
+  onnxruntime            1.19.0               1.19.0               ✓ match
+  opencv                 4.8.0                4.10.0               ✗ differ
+  tensorrt               8.6.2                8.6.2                ✓ match
+  opencv GStreamer       yes                  yes                  ✓ match
+  ...
+```
+
+If no image is built/pulled locally, the Docker column shows `-` with a hint to
+run `make pull` / `make build`. After the table, a **verdict** marks each
+prerequisite `[ok]` / `[MISS]` / `[warn]`; the script aborts before creating the
+venv if a required one (onnxruntime-gpu CUDA provider, GStreamer OpenCV) is
+missing.
+
 ## Prerequisites (must exist on the host first)
 
 A venv isolates **Python packages only** — it does not supply the GPU builds.

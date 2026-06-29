@@ -128,6 +128,27 @@ models:
     warmup_runs: 5
     benchmark_runs: 50
 
+  # ── Feature Matching (DLA-split PROTOTYPE — Orin NX) ─────────────────────────
+  # Runs the SuperPoint conv backbone on the NVDLA (FP16, TensorRT EP) and keeps
+  # keypoint post-processing + the LightGlue matcher (FP16) on the GPU.
+  # On non-DLA hardware it falls back to full-GPU SuperPoint automatically, so
+  # this entry is safe to benchmark anywhere — compare its row against
+  # superpoint_lightglue above. See docs/DLA_SUPERPOINT_PROTOTYPE.md.
+  # Requires: pip install lightglue torch onnxruntime-gpu (Jetson TRT EP build).
+  - name: superpoint_lightglue_dla
+    task: feature_matching
+    backend: lightglue_dla
+    source: system                  # weights fetched by lightglue package — no download step
+    local_path: "models/.lightglue_dla_sentinel"
+    input_shape: [1, 1, 480, 640]   # grayscale [N, 1, H, W]
+    max_keypoints: 512
+    dla_core: 0                     # NVDLA core 0 or 1 (Orin NX has two)
+    nms_radius: 4
+    detection_threshold: 0.0005
+    force_gpu_fallback: false       # set true for an A/B GPU-only baseline
+    warmup_runs: 5
+    benchmark_runs: 50
+
   # ── Visual Odometry ─────────────────────────────────────────────────────────
   # CUDA Lucas-Kanade optical flow + Essential Matrix pose recovery.
   # Uses OpenCV CUDA (built into all JetPack releases) — no extra packages.

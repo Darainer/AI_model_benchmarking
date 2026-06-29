@@ -31,6 +31,13 @@ def build_model(
         from src.models.backends.feature_matching_backend import LightGlueModel
         m = LightGlueModel(config, ort_providers=ort_providers)
 
+    elif backend == "lightglue_dla":
+        # PROTOTYPE — SuperPoint conv backbone on NVDLA (Orin NX), keypoint
+        # post-processing + LightGlue matcher on the GPU. Falls back to full-GPU
+        # SuperPoint if no DLA / TensorRT EP is available.
+        from src.models.backends.feature_matching_dla_backend import LightGlueDLAModel
+        m = LightGlueDLAModel(config, ort_providers=ort_providers)
+
     elif backend == "cuvslam":
         from src.models.backends.cuvslam_backend import CuVSLAMModel
         m = CuVSLAMModel(config)

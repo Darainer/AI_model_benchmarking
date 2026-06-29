@@ -10,23 +10,18 @@
 # from the host at runtime by the nvidia container runtime.
 FROM dustynv/l4t-ml:r36.4.0
 
-# --- The critical bit: do NOT let pip replace the Jetson-built GPU packages ---
-# transformers/smp/etc. list torch, torchvision, opencv etc. as dependencies.
-# Pinning the already-installed versions as constraints makes pip treat them as
-# satisfied and leaves the (GPU-enabled, aarch64) builds untouched.
-RUN --network=host python3 -m pip install --no-cache-dir --upgrade pip && \
-    pip freeze 2>/dev/null \
-      | grep -iE '^(torch|torchvision|torchaudio|onnxruntime|onnxruntime-gpu|numpy|opencv|pandas)' \
-      > /opt/jetson-constraints.txt || true && \
-    echo "----- pinned (kept) packages -----" && cat /opt/jetson-constraints.txt
-
-# Pure-python deps our pipeline adds on top of the base image.
-# opencv-python and onnxruntime-gpu are deliberately absent — they come from
-# the base and must not be reinstalled from PyPI.
-COPY requirements-docker.txt /tmp/requirements-docker.txt
-RUN --network=host pip install --no-cache-dir -c /opt/jetson-constraints.txt \
-        --extra-index-url https://pypi.org/simple \
-        -r /tmp/requirements-docker.txt
+# --- Install deps via the SHARED installer (Layer 1) -------------------------
+# scripts/install_deps.sh is the single source of truth for dependency setup —
+# the host venv (scripts/setup_venv.sh) runs the exact same script, so the
+# container and the venv resolve to the same dependency set. It freezes the
+# Jetson-built GPU packages already in this base image into a constraints file
+# and installs the pure-python deps under it, so pip never replaces the
+# (GPU-enabled, aarch64) torch/torchvision/onnxruntime-gpu/opencv builds.
+COPY requirements-deps.txt /tmp/requirements-deps.txt
+COPY scripts/install_deps.sh /tmp/install_deps.sh
+RUN --network=host REQ_FILE=/tmp/requirements-deps.txt \
+        CONSTRAINTS=/opt/jetson-constraints.txt \
+        bash /tmp/install_deps.sh
 
 # Project code. The repo is also bind-mounted over /workspace at runtime (see
 # docker-compose.yml) so live edits don't need a rebuild; this COPY just makes

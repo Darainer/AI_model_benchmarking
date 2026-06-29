@@ -1,0 +1,40 @@
+# Pure-python deps layered on top of the Jetson GPU stack.
+#
+# This is the SHARED dependency list — installed identically by both the host
+# venv (scripts/setup_venv.sh) and the Docker build (Dockerfile) via the shared
+# installer scripts/install_deps.sh. Edit deps here once; both environments
+# pick them up, which is what keeps them consistent.
+#
+# NOT listed here (provided by the base — dustynv/l4t-ml image in Docker, or
+# JetPack apt + --system-site-packages in the venv — and must not be reinstalled):
+#   torch, torchvision, onnxruntime-gpu, opencv (CUDA+GStreamer build), numpy, pandas
+#
+# install_deps.sh installs these under a constraints file (frozen from the GPU
+# packages already present) so anything that lists torch/torchvision/opencv as a
+# dependency reuses the Jetson builds instead of pulling generic PyPI wheels.
+
+pyyaml>=6.0
+tqdm>=4.62.0
+requests>=2.26.0
+huggingface_hub>=0.12.0
+
+# SegFormer (source=huggingface) — transformers does not hard-require torch,
+# so this will not drag in a non-Jetson torch.
+transformers>=4.26.0
+
+# UNet / FPN / DeepLabV3+ (source=smp). Depends on torch+torchvision; the
+# constraints file keeps the existing Jetson builds.
+segmentation-models-pytorch>=0.3.0
+
+# RF-DETR object detector (source=rfdetr)
+rfdetr>=1.1.0
+
+# SuperPoint + LightGlue feature matching (source=lightglue)
+# Install from source — the PyPI wheel may omit the onnx submodule.
+git+https://github.com/cvg/LightGlue.git
+
+# NOTE: ultralytics (YOLO) is intentionally omitted from the default deps — it
+# hard-depends on opencv-python, which would clobber the GStreamer-enabled
+# OpenCV (the base image's build, or JetPack's apt build in the venv). Install
+# it without deps if you need it:
+#   pip install --no-deps ultralytics

@@ -26,7 +26,12 @@ make shell                                  # interactive shell in the container
 
 - **Base:** `dustynv/l4t-ml:r36.4.0` — a prebuilt, Jetson-compiled image with the
   full GPU ML stack already working on aarch64. We add only pure-python deps and
-  our code on top (`requirements-docker.txt` + a `COPY`).
+  our code on top.
+- **Shared dependency install:** the Dockerfile does not install deps inline — it
+  `COPY`s and runs `scripts/install_deps.sh` (with `requirements-deps.txt`), the
+  **same script the host venv uses** (`scripts/setup_venv.sh`). One source of
+  truth keeps the container and the venv consistent. See [VENV.md](VENV.md) for
+  the two-layer design and when to prefer a venv (HW-decoded video/camera runs).
 - **Live edits:** `docker-compose.yml` bind-mounts the repo at `/workspace`, so
   code/config changes take effect without rebuilding. `models/` and `results/`
   persist on the host as subdirs of that mount.
@@ -42,8 +47,8 @@ make shell                                  # interactive shell in the container
 2. **Never let pip replace the Jetson GPU packages.** The base ships
    Jetson-built `torch`, `torchvision`, `onnxruntime-gpu`, and `opencv`. Packages
    like `transformers`/`segmentation-models-pytorch` list these as dependencies;
-   the Dockerfile pins the installed versions via a constraints file so pip
-   reuses them instead of pulling generic (broken-on-aarch64) PyPI wheels.
+   `scripts/install_deps.sh` pins the installed versions via a constraints file
+   so pip reuses them instead of pulling generic (broken-on-aarch64) PyPI wheels.
 
 3. **OpenCV + GStreamer.** Hardware video decode / CSI camera relies on the
    GStreamer-enabled OpenCV in the base. Do **not** add `opencv-python` to any

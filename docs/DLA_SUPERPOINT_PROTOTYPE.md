@@ -1,204 +1,225 @@
 # DLA-split SuperPoint + LightGlue — Orin NX Prototype
 
 > **Status: PROTOTYPE / UNTESTED ON HARDWARE.**
-> The code loads and runs on any CUDA machine via a full-GPU fallback, but the
-> NVDLA offload path can only be *exercised and timed* on real Jetson Orin NX
-> silicon with the JetPack TensorRT + `onnxruntime-gpu` (TensorRT EP) stack.
-> Numbers below are reasoned estimates, not measured results.
+> All code loads and runs on any CUDA machine via a full-GPU fallback, but the
+> NVDLA offload + DLA/GPU overlap can only be *exercised and timed* on real
+> Jetson Orin NX silicon with the JetPack TensorRT stack. Numbers below are
+> reasoned estimates, not measured results.
 
-## Why
+## The thesis
 
-The stock pipeline (`backend: lightglue`) runs **both** stages on the GPU:
+The DLA does **not** make SuperPoint faster in isolation — DLA v2 is a few TOPS
+versus the GPU's tens. The win is a **system** win:
 
-```
-SuperPoint (CNN)  ──►  LightGlue (attention matcher)   ── all on GPU
-```
+1. **Move the SuperPoint conv backbone off the GPU onto the idle NVDLA.**
+2. **Overlap** it with the GPU work (matcher) on a *stream* of frames.
+3. Result: the GPU 3D engine stops doing convolutions → **measured GPU
+   utilization drops**, and that reclaimed GPU headroom can run a second model
+   (detection / segmentation) concurrently, or the whole pipeline runs cooler.
 
-`HARDWARE.md` flags this workload as **bandwidth-bound**, not compute-bound.
-Two facts drive that:
+So the metric that matters here is **`gpu_util_avg_pct` going down while
+throughput holds**, not single-model latency going down.
 
-1. **SuperPoint under-fills the GPU.** It's a small dense CNN at 480×640 — it
-   does not saturate the 1024 Ampere cores on an Orin NX.
-2. **The matcher is latency/BW-bound.** Attention over ≤512 keypoints is a pile
-   of *tiny* matmuls (512×256, 512×512) plus softmax. The arithmetic is trivial;
-   you pay for memory traffic and kernel launches, not FLOPs.
+## Architecture
 
-Meanwhile, the **two NVDLA v2 cores on the Orin NX sit idle.** The DLA is a
-fixed-function CNN accelerator — exactly what SuperPoint's conv backbone wants.
-Moving that backbone off the GPU frees the GPU to do nothing but the matcher,
-and lets the two engines overlap.
-
-## The split
-
-SuperPoint is not one monolithic block — it's a conv backbone followed by a
-keypoint-extraction head:
+SuperPoint splits at the static/dynamic boundary:
 
 ```
 SuperPoint
-├── dense conv backbone        conv1a … convPb / convDb     ← STATIC shapes, FP16
-│                                                              → DLA-friendly
-└── keypoint head              softmax → depth-to-space →    ← DYNAMIC shapes
-                               NMS → top-k → grid_sample        (variable #kpts)
-                                                              → must stay on GPU
+├── dense conv backbone     conv1a … convPb / convDb     STATIC shapes, FP16
+│                                                         → NVDLA (zero-copy)
+└── keypoint head           softmax → depth-to-space →    DYNAMIC shapes
+                            NMS → top-k → grid_sample      → GPU (always)
+
+LightGlue attention matcher                                → GPU, FP16 autocast
 ```
 
-So the prototype routes work like this:
+Two backends are provided:
 
-```
-        image (1×1×480×640, FP16)
-                 │
-                 ▼
-   ┌─────────────────────────────┐
-   │ SuperPoint conv backbone     │   NVDLA core 0   (TensorRT EP, FP16)
-   │ → scores_logits [1,65,60,80] │   GPU_FALLBACK handles any rejected layer
-   │ → desc_raw      [1,256,60,80]│
-   └─────────────────────────────┘
-                 │   (dense conv maps)
-                 ▼
-   ┌─────────────────────────────┐
-   │ keypoint post-processing     │   GPU   (dynamic shapes)
-   │ softmax→d2s→NMS→top-k→sample │
-   └─────────────────────────────┘
-                 │   (keypoints + descriptors)
-                 ▼
-   ┌─────────────────────────────┐
-   │ LightGlue attention matcher  │   GPU   (FP16 autocast → Tensor Cores)
-   └─────────────────────────────┘
-                 │
-                 ▼
-              matches
-```
+| Backend (`configs/models.yaml`) | What it does | Use |
+|---|---|---|
+| `lightglue_dla` | Single frame, self-match (image0==image1). | Benchmark parity vs stock `lightglue`; verifies the DLA path works. |
+| `lightglue_dla_pipeline` | **Overlapped** streaming, matches consecutive frames. | The real win — DLA ∥ GPU concurrency. |
 
-### Why the cut is *exactly here*
+## Zero-copy: how tensors stay on the device
 
-- **DLA only runs static-shape FP16/INT8 layers.** The conv stack qualifies; the
-  keypoint head (whose output length depends on the image) does not. Trying to
-  push NMS/top-k onto the DLA would fail the build or silently fall back.
-- **`GPU_FALLBACK` is mandatory, not optional.** A couple of ops in the backbone
-  (notably the final reshape / depth-to-space if you fold it in) may not be
-  DLA-supported. With GPU fallback on, TensorRT places those on the GPU and only
-  the conv-heavy core lands on the DLA. The prototype leaves the depth-to-space
-  *out* of the exported graph for this reason — it's done in the GPU post-proc.
-- **FP16 on the matcher is the cheap win.** The stock backend runs the matcher
-  in FP32. Wrapping it in `torch.autocast(float16)` puts the small matmuls on
-  Tensor Cores for ~1.5–2× with no algorithmic change. This is independent of
-  the DLA work and is the single highest-value line in the prototype.
+The earlier draft round-tripped GPU→CPU→ORT→GPU. That's gone. The shared
+extractor (`src/models/backends/_superpoint_dla.py`) keeps everything in
+device memory, with three modes picked at `setup()`:
 
-## What's in the repo
+### `trt-dla` — native TensorRT (the real path)
+- Builds (and disk-caches) a TensorRT engine from the exported backbone ONNX
+  with `default_device_type = DLA`, `DLA_core = N`, `FP16`, and `GPU_FALLBACK`.
+- At inference, **no copies**: the input and both outputs are torch CUDA
+  tensors whose pointers are handed to TRT via
+  `context.set_tensor_address(name, tensor.data_ptr())`.
+- Runs with `execute_async_v3(stream_handle=...)` on a caller-supplied CUDA
+  stream → **asynchronous**, so it can overlap GPU work (see pipeline below).
 
-| File | Change |
-|---|---|
-| `src/models/backends/feature_matching_dla_backend.py` | New `LightGlueDLAModel` backend (the prototype). |
-| `src/models/registry.py` | Registers `backend: lightglue_dla`. |
-| `configs/models.yaml` | New `superpoint_lightglue_dla` entry. |
-| `docs/DLA_SUPERPOINT_PROTOTYPE.md` | This document. |
-
-The new backend reuses the existing `BaseModel` interface and the
-`source: system` sentinel flow, so `download_models.py` and `run_benchmark.py`
-need no changes.
-
-### Config knobs (`configs/models.yaml`)
-
-```yaml
-- name: superpoint_lightglue_dla
-  backend: lightglue_dla
-  max_keypoints: 512
-  dla_core: 0                 # 0 or 1 — Orin NX has two NVDLA cores
-  nms_radius: 4               # SuperPoint default
-  detection_threshold: 0.0005
-  force_gpu_fallback: false   # true → skip DLA, pure-GPU baseline for A/B
+```python
+scores_t = torch.empty((1,65,H//8,W//8), device="cuda")   # TRT writes here
+desc_t   = torch.empty((1,256,H//8,W//8), device="cuda")
+ctx.set_tensor_address("image",          img.data_ptr())
+ctx.set_tensor_address("scores_logits",  scores_t.data_ptr())
+ctx.set_tensor_address("desc_raw",       desc_t.data_ptr())
+ctx.execute_async_v3(stream_handle=dla_stream.cuda_stream)
 ```
 
-## How to run
+### `ort-dla` — onnxruntime TensorRT EP (simpler fallback)
+- `trt_dla_enable=1`, `trt_dla_core=N`, `trt_fp16_enable=1`.
+- Still zero-copy via `io_binding` bound to torch tensor `data_ptr()`s, but
+  `run_with_iobinding` is **synchronous** — correct, but no DLA/GPU overlap.
+
+### `gpu` — stock lightglue SuperPoint
+- No DLA available → run the full extractor on the GPU. Everything still works.
+
+`backend_name()` reports the active mode (`SP-trt-dla∥LG[overlap]/CUDA`, etc.)
+and it lands in the CSV `backend` column.
+
+## The overlapped pipeline
+
+`feature_matching_pipeline_backend.py` drives **two CUDA streams** with a
+one-frame software pipeline (double-buffered):
+
+```
+Per frame N (single sync at the end):
+  dla_stream :  backbone(N)                       ── NVDLA, async, zero-copy
+  gpu_stream :  wait(event N-1)
+                postproc(N-1)                      ── GPU
+                match(N-2, N-1)  [FP16 autocast]   ── GPU
+```
+
+Because backbone(N) and the previous frame's GPU work are issued to different
+streams before the sync, they run **concurrently**:
+
+```
+frame:     N-1         N           N+1
+DLA  :   bbone(N-1)  bbone(N)    bbone(N+1)
+GPU  :      …        post(N-1)    post(N)
+                     match(N-2)   match(N-1)
+            └── overlap ──┘
+```
+
+A `torch.cuda.Event` recorded on `dla_stream` after backbone(N) gates the GPU
+stream so it never reads backbone outputs before the DLA has written them —
+correctness without a global sync between the engines.
+
+The matcher now matches **consecutive frames** (N-2 ↔ N-1), the real
+odometry/tracking use case, instead of a frame against itself. First two frames
+return empty (pipeline fill).
+
+> In `ort-dla`/`gpu` modes the pipeline runs serially (no overlap) but still
+> produces correct consecutive matches — so the backend is safe to benchmark
+> anywhere. `backend_name()` shows `[overlap]` vs `[serial]`.
+
+## Getting GPU utilization down — how to measure it
+
+Two independent measurements, both already plumbed:
+
+### 1. System GR3D% via the existing HardwareMonitor
+`run_benchmark.py` samples `tegrastats` and records `gpu_util_avg_pct`
+(GR3D_FREQ — the GPU 3D-engine busy %). Compare three rows in one run:
 
 ```bash
-# Anywhere (will use the full-GPU fallback off-Jetson):
-python scripts/run_benchmark.py --filter superpoint_lightglue_dla
-
-# A/B against the stock GPU pipeline in one run:
-python scripts/run_benchmark.py --filter superpoint_lightglue superpoint_lightglue_dla
+python scripts/run_benchmark.py --filter \
+  superpoint_lightglue \
+  superpoint_lightglue_dla \
+  superpoint_lightglue_dla_pipeline
 ```
 
-On a real Orin NX, watch the log line on load:
+Expectation on Orin NX:
+
+| Row | GPU% (GR3D) | Why |
+|---|---|---|
+| `superpoint_lightglue` (stock) | highest | backbone + matcher both on GPU |
+| `superpoint_lightglue_dla` | lower | backbone on DLA, but serial |
+| `superpoint_lightglue_dla_pipeline` | **lowest** | backbone on DLA *and* overlapped |
+
+### 2. Per-frame GPU-busy time via CUDA events
+The pipeline brackets its GPU-stream work with `cudaEvent`s and logs an EMA:
 
 ```
-superpoint_lightglue_dla: DLA backbone path ACTIVE (core=0).
-superpoint_lightglue_dla: backbone ORT session providers=['TensorrtExecutionProvider', ...]
+superpoint_lightglue_dla_pipeline: GPU-busy/frame ≈ 6.20 ms (EMA) over 25 frames
 ```
 
-If you instead see `DLA path unavailable (...). Falling back to full-GPU
-SuperPoint.` the prototype still benchmarks — it just measured the GPU path.
-The `backend` column in the CSV disambiguates:
-`LightGlue-DLA[SuperPoint@DLA+LightGlue@GPU/FP16]/CUDA` vs `...[FullGPU]/CUDA`.
+If `GPU-busy/frame` is well below `avg_latency_ms`, the GPU is idle for the
+remainder of each frame — that idle slice is the headroom the DLA bought you,
+available for a concurrent model.
 
-## Verifying the DLA is actually used
-
-ORT reporting the TensorRT EP is necessary but not sufficient — confirm the DLA
-core is busy while the backbone runs:
+### 3. Confirm the DLA is actually doing the work
+GR3D% dropping is only meaningful if the DLA picked up the backbone:
 
 ```bash
-# DLA utilization counters
+# DLA engine power-gated state (should be 'active' during the run)
 cat /sys/devices/platform/host1x/15880000.nvdla0/power/runtime_status
-sudo tegrastats        # watch the NVDLA / DLA_FREQ fields
-```
+sudo tegrastats              # watch for DLA / NVDLA activity, falling GR3D_FREQ
+jtop                         # jetson-stats: per-engine GPU/DLA/CPU gauges
 
-You can also dump the TensorRT engine layer placement:
-
-```bash
-trtexec --onnx=models/superpoint_lightglue_dla_backbone.onnx \
+# Verify layer placement at build time
+trtexec --onnx=models/.lightglue_dla_sentinel_backbone.onnx \
         --useDLACore=0 --fp16 --allowGPUFallback --verbose 2>&1 | grep -i dla
 ```
 
+> Note: raw `tegrastats` does not expose a reliable DLA-utilization percentage
+> on all JetPack builds; `jtop` (jetson-stats) is the most dependable per-engine
+> view. The benchmark CSV captures GR3D% (GPU) — the DLA side is confirmed
+> qualitatively via the tools above.
+
 ## Expected outcome (estimate, not measured)
 
-Stock pipeline on Orin NX 16 GB is ~12 ms (HARDWARE.md). For the DLA split,
-the realistic expectation:
+- **Latency:** roughly flat, possibly a small win from the FP16 matcher. The
+  DLA backbone is not faster than the GPU backbone in isolation.
+- **GPU utilization:** **down** — the headline result. The conv work leaves
+  GR3D; with overlap the GPU is busy only for postproc+matcher.
+- **System throughput:** the real payoff appears when you run a *second* GPU
+  model alongside this one. The freed GPU slice means the detector/segmenter
+  no longer contends with SuperPoint's convolutions.
 
-- The **DLA is slower per-op than the GPU** for the backbone in isolation (DLA
-  v2 ≈ a few TOPS vs the GPU's tens). So the win is **not** a faster backbone.
-- The win is **concurrency + freeing the GPU**: backbone on DLA overlaps with
-  the matcher on GPU, and the matcher gets the GPU to itself in FP16.
-- Net effect is workload-dependent. Likely outcomes, in order of probability:
-  1. **Latency roughly flat, GPU headroom freed** — best when you run another
-     GPU model concurrently (detection, segmentation). This is the real use
-     case: the DLA split is a *system throughput* optimization, not a
-     single-model latency one.
-  2. **Small latency win** from the FP16 matcher dominating.
-  3. **Slight regression** if the SoC-memory round-trip (GPU tensor → numpy →
-     ORT → GPU tensor in `_extract_dla`) costs more than the DLA saves. See
-     limitations.
+## What's in the repo
 
-**Bottom line the analysis already reached:** the matcher is a mediocre GPU
-target and the DLA can't help it; the DLA's value is taking the *backbone* off
-the GPU so the whole-system pipeline (matcher + other models) has more GPU to
-work with. Treat this prototype as a throughput experiment, not a latency
-silver bullet.
+| File | Role |
+|---|---|
+| `src/models/backends/_superpoint_dla.py` | Shared zero-copy extractor (trt-dla / ort-dla / gpu), GPU post-proc. |
+| `src/models/backends/feature_matching_dla_backend.py` | `lightglue_dla` — single-frame self-match. |
+| `src/models/backends/feature_matching_pipeline_backend.py` | `lightglue_dla_pipeline` — overlapped consecutive-frame streaming. |
+| `src/models/registry.py` | Registers both backends. |
+| `configs/models.yaml` | `superpoint_lightglue_dla` + `superpoint_lightglue_dla_pipeline`. |
+| `docs/DLA_SUPERPOINT_PROTOTYPE.md` | This document. |
+
+### Config knobs
+
+```yaml
+max_keypoints: 512
+dla_core: 0                 # 0 or 1 — Orin NX has two NVDLA cores
+nms_radius: 4
+detection_threshold: 0.0005
+force_gpu_fallback: false   # true → skip DLA, pure-GPU baseline for A/B
+```
 
 ## Known limitations / TODO before this is real
 
-- **Host round-trip in `_extract_dla`.** The current code moves the image
-  GPU→CPU→ORT and the results back, which on a unified-memory SoC is wasteful.
-  Production path: ORT IO-binding with CUDA pointers, or run the backbone via
-  native TensorRT with the DLA core set and keep everything in device memory.
-- **Backbone-attribute coupling.** `_SuperPointBackbone` reaches into the
-  `lightglue` SuperPoint submodule names (`conv1a`…`convDb`). If the package
-  refactors, export raises `AttributeError` and we fall back. Pin the
-  `lightglue` commit, or vendor the SuperPoint forward.
-- **Post-processing parity.** The GPU NMS/top-k/sample mirrors SuperPoint but
-  has **not** been numerically diffed against `extractor.extract()` on hardware.
-  Validate match counts agree before trusting timing.
-- **INT8 DLA.** Only FP16 is wired up. INT8 on the DLA would roughly double its
-  throughput but needs a calibration cache — out of scope for the prototype.
-- **Two DLA cores.** `dla_core: 0` only. A fuller system could put a second
-  model's CNN on core 1 to load-balance.
+- **Hardware validation.** None of the timing/utilization claims are measured.
+  Run the three-row comparison on an Orin NX and record real GR3D% deltas.
+- **Post-processing parity.** The GPU NMS/top-k/sample mirrors lightglue's
+  SuperPoint but has not been numerically diffed against `extractor.extract()`
+  on hardware. Validate that match counts agree before trusting timing.
+- **ORT stream overlap.** `ort-dla` mode is synchronous — only `trt-dla`
+  overlaps. That's intentional (ORT user-compute-stream wiring is brittle), but
+  it means the concurrency win requires the native TRT path.
+- **Two DLA cores.** Only `dla_core: 0` is used. A fuller system could place a
+  second model's CNN on core 1 to load-balance the two NVDLA engines.
+- **INT8 DLA.** Only FP16 is wired up; INT8 (≈2× DLA throughput) needs a
+  calibration cache — out of scope for the prototype.
+- **Backbone-attribute coupling.** `_SuperPointBackbone` reaches into lightglue
+  SuperPoint submodule names; pin the `lightglue` commit or vendor the forward.
 
 ## References
 
 - Sarlin et al., *SuperGlue: Learning Feature Matching with Graph Neural
-  Networks*, CVPR 2020 (the optimal-transport matcher this lineage starts from).
+  Networks*, CVPR 2020.
 - Lindenberger et al., *LightGlue: Local Feature Matching at Light Speed*,
-  ICCV 2023 (adaptive-depth successor; the dependency actually used here).
+  ICCV 2023 (the dependency actually used here).
 - DeTone et al., *SuperPoint: Self-Supervised Interest Point Detection and
   Description*, CVPRW 2018.
-- NVIDIA, *Working with DLA* (TensorRT Developer Guide) — `--useDLACore`,
-  `--allowGPUFallback`, FP16/INT8 constraints.
+- NVIDIA TensorRT Developer Guide — *Working with DLA* (`set_tensor_address`,
+  `execute_async_v3`, `DLA_core`, `GPU_FALLBACK`, FP16/INT8 constraints).

@@ -149,6 +149,26 @@ models:
     warmup_runs: 5
     benchmark_runs: 50
 
+  # ── Feature Matching (overlapped DLA∥GPU streaming pipeline — Orin NX) ───────
+  # The concurrency variant: SuperPoint backbone(N) runs on the NVDLA while the
+  # GPU post-processes + matches frame N-1, on consecutive frames. This is where
+  # the DLA actually pays off — watch gpu_util_avg_pct drop vs the rows above
+  # while throughput holds. Falls back to a serial pipeline off-Jetson.
+  # See docs/DLA_SUPERPOINT_PROTOTYPE.md.
+  - name: superpoint_lightglue_dla_pipeline
+    task: feature_matching
+    backend: lightglue_dla_pipeline
+    source: system
+    local_path: "models/.lightglue_dla_sentinel"   # reuses the backbone export/engine
+    input_shape: [1, 1, 480, 640]
+    max_keypoints: 512
+    dla_core: 0
+    nms_radius: 4
+    detection_threshold: 0.0005
+    force_gpu_fallback: false
+    warmup_runs: 5
+    benchmark_runs: 50
+
   # ── Visual Odometry ─────────────────────────────────────────────────────────
   # CUDA Lucas-Kanade optical flow + Essential Matrix pose recovery.
   # Uses OpenCV CUDA (built into all JetPack releases) — no extra packages.

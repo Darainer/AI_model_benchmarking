@@ -111,22 +111,30 @@ verdict() {  # $1=label  $2=condition(0=ok)  $3=required(1/0)  $4=fix-hint
 [ "${HOST[ort_cuda]:-}" = "yes" ] && r1=ok || r1=no
 [ "${HOST[opencv_gstreamer]:-}" = "yes" ] && r2=ok || r2=no
 [ "${HOST[torch_cuda]:-}" = "yes" ] && r3=ok || r3=no
-[ "${HOST[tensorrt]:--}" != "-" ] && r4=ok || r4=no
+[ "${HOST[torchvision]:--}" != "-" ] && r4=ok || r4=no
+[ "${HOST[tensorrt]:--}" != "-" ] && r5=ok || r5=no
 verdict "onnxruntime-gpu (CUDA provider)" "$r1" 1 \
   "install the Jetson onnxruntime-gpu wheel (Jetson Zoo / NVIDIA index)"
 verdict "OpenCV built WITH GStreamer" "$r2" 1 \
   "sudo apt-get install python3-opencv  (JetPack build; do NOT pip install opencv-python)"
-verdict "torch (CUDA)" "$r3" 0 \
-  "install the Jetson torch wheel (only for source=torchvision/huggingface/smp)"
-verdict "tensorrt bindings" "$r4" 0 \
+# torch + torchvision are REQUIRED, not optional: the default requirements-deps.txt
+# pulls torch-dependent packages (segmentation-models-pytorch, rfdetr, lightglue).
+# If they aren't already present (and thus frozen into the constraints file), pip
+# would fetch generic aarch64 builds and clobber/defeat the Jetson stack.
+verdict "torch (CUDA)" "$r3" 1 \
+  "install the Jetson torch wheel — the default deps (smp/rfdetr/lightglue) require torch"
+verdict "torchvision" "$r4" 1 \
+  "install the Jetson torchvision wheel — required by segmentation-models-pytorch"
+verdict "tensorrt bindings" "$r5" 0 \
   "sudo apt-get install python3-libnvinfer  (only for backend=tensorrt)"
 
 if [ "$required_missing" -ne 0 ]; then
   echo
   echo "  !! Required GPU packages are missing on the host. The venv would not"
   echo "  !! have a working GPU stack. Install the [MISS] items above, then"
-  echo "  !! re-run this script. (torch/tensorrt warnings are fine to skip if"
-  echo "  !! you don't use those backends.)"
+  echo "  !! re-run this script. (The tensorrt warning is fine to skip unless you"
+  echo "  !! use backend=tensorrt. To install a CPU-only/non-Jetson venv anyway,"
+  echo "  !! run scripts/install_deps.sh directly with ALLOW_UNPINNED=1.)"
   exit 1
 fi
 

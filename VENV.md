@@ -82,8 +82,13 @@ required one is missing:
 |---|---|---|
 | `onnxruntime-gpu` (CUDA EP) | **yes** | Jetson Zoo / NVIDIA wheel index (not PyPI) |
 | OpenCV built **with GStreamer** | **yes** | `sudo apt-get install python3-opencv` (JetPack build) |
-| `torch` (+ `torchvision`) | optional | Jetson torch wheel — only for `source=torchvision/huggingface/smp` |
+| `torch` (CUDA) | **yes** | Jetson torch wheel — the default deps (`segmentation-models-pytorch`, `rfdetr`, `lightglue`) require it |
+| `torchvision` | **yes** | Jetson torchvision wheel — required by `segmentation-models-pytorch` |
 | `tensorrt` bindings | optional | `sudo apt-get install python3-libnvinfer` — only for `backend=tensorrt` |
+
+> torch/torchvision are **required** because they're in the default dependency
+> set's transitive closure. If you genuinely want a smaller, torch-free venv,
+> trim the torch-dependent packages from `requirements-deps.txt` first.
 
 > **Never `pip install opencv-python`.** The PyPI wheel has no GStreamer and
 > would shadow the JetPack build, breaking HW decode / CSI capture. This is also

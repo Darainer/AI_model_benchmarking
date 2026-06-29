@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AI Model Benchmark — Jetson Orin Nano</title>
+<style>
+  :root{
+    --bg:#0f1115; --panel:#171a21; --panel2:#1e222b; --ink:#e6e9ef; --muted:#9aa4b2;
+    --line:#2a2f3a; --accent:#76b900; --accent2:#3aa0ff; --warn:#f0a020; --bad:#ff6b6b; --good:#76b900;
+    --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+    --sans:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--sans);line-height:1.55;font-size:15px}
+  .wrap{max-width:1040px;margin:0 auto;padding:32px 22px 80px}
+  h1{font-size:26px;margin:0 0 4px}
+  h2{font-size:19px;margin:38px 0 12px;padding-bottom:6px;border-bottom:1px solid var(--line)}
+  h3{font-size:15px;margin:22px 0 8px;color:var(--accent)}
+  p{margin:10px 0}
+  a{color:var(--accent2)}
+  code{font-family:var(--mono);background:#11141a;border:1px solid var(--line);padding:1px 5px;border-radius:4px;font-size:13px}
+  .sub{color:var(--muted);font-size:13.5px}
+  .meta{display:flex;flex-wrap:wrap;gap:8px 22px;margin:14px 0 0;color:var(--muted);font-size:13px}
+  .meta b{color:var(--ink);font-weight:600}
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px 18px;margin:14px 0}
+  .callout{border-left:3px solid var(--warn);background:#1c1a12}
+  .callout.good{border-left-color:var(--good);background:#141a10}
+  .callout.info{border-left-color:var(--accent2);background:#101720}
+  table{width:100%;border-collapse:collapse;margin:12px 0;font-size:13.5px}
+  th,td{text-align:right;padding:7px 9px;border-bottom:1px solid var(--line)}
+  th:first-child,td:first-child{text-align:left}
+  thead th{color:var(--muted);font-weight:600;border-bottom:1px solid var(--line);white-space:nowrap}
+  tbody tr:hover{background:#1b1f28}
+  .mono{font-family:var(--mono)}
+  .tag{display:inline-block;font-size:11px;padding:1px 7px;border-radius:20px;border:1px solid var(--line);white-space:nowrap}
+  .tag.dla{color:var(--good);border-color:#33531a;background:#141c0e}
+  .tag.nodla{color:var(--bad);border-color:#5a2a2a;background:#1c1212}
+  .tag.ofa{color:var(--accent2);border-color:#234055;background:#0e1722}
+  .flow{display:flex;flex-wrap:wrap;align-items:stretch;gap:0;margin:8px 0 4px}
+  .stage{flex:1;min-width:120px;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:10px 12px;position:relative}
+  .stage h4{margin:0 0 4px;font-size:13px;color:var(--ink)}
+  .stage p{margin:0;font-size:12px;color:var(--muted)}
+  .arrow{display:flex;align-items:center;color:var(--muted);padding:0 6px;font-size:18px}
+  .timed{outline:2px solid var(--accent);outline-offset:-2px}
+  .bar-row{display:grid;grid-template-columns:170px 1fr 70px;align-items:center;gap:10px;margin:5px 0;font-size:13px}
+  .bar-track{background:#11141a;border:1px solid var(--line);border-radius:5px;height:18px;overflow:hidden}
+  .bar-fill{height:100%;background:linear-gradient(90deg,var(--accent),#a0e02a)}
+  .bar-fill.blue{background:linear-gradient(90deg,#2b6cb0,#3aa0ff)}
+  .legend{font-size:12.5px;color:var(--muted)}
+  .legend b{color:var(--ink)}
+  ul{margin:8px 0;padding-left:20px}
+  li{margin:4px 0}
+  .small{font-size:12.5px;color:var(--muted)}
+  hr{border:none;border-top:1px solid var(--line);margin:30px 0}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>AI Model Inference Benchmark</h1>
+  <div class="sub">NVIDIA Jetson Orin Nano · pure-inference measurement over a fixed image set</div>
+  <div class="meta">
+    <span><b>Device:</b> Jetson Orin Nano 8&nbsp;GB</span>
+    <span><b>Stack:</b> JetPack 6.2 / L4T r36.5 · CUDA 12.6</span>
+    <span><b>Input:</b> 100 frames @ 1920×1080 (<code>data/frames_dji_0118</code>)</span>
+    <span><b>Backends:</b> ONNX Runtime (TensorRT EP, FP16) · native CUDA</span>
+    <span><b>Monitor:</b> tegrastats + GPU devfreq + CuPy BW probe</span>
+    <span><b>Run:</b> 2026-06-28 22:25</span>
+  </div>
+
+  <!-- ───────────────────────── PIPELINE ───────────────────────── -->
+  <h2>1 · The benchmarking pipeline</h2>
+  <p>Each model is driven through the same five stages. Only the <b>inference</b> stage sits
+  inside the latency timer; preprocessing runs in <code>model.prepare()</code> just before it,
+  outside the timer, so the recorded latency is pure model execution.</p>
+
+  <div class="flow">
+    <div class="stage"><h4>① Source</h4><p>100 pre-decoded JPEGs (<code>image_dir</code>) read via <code>cv2.imread</code>.</p></div>
+    <div class="arrow">→</div>
+    <div class="stage"><h4>② Preprocess</h4><p>Resize → RGB → normalize → CHW → batch (letterbox for detectors) + host→device copy — <code>model.prepare()</code>, <b>not timed</b>.</p></div>
+    <div class="arrow">→</div>
+    <div class="stage timed"><h4>③ Inference ⏱</h4><p><b>Timed.</b> <code>model.infer_prepared()</code> — backend execution only, on GPU via TensorRT-EP / CUDA.</p></div>
+    <div class="arrow">→</div>
+    <div class="stage"><h4>④ Metrics</h4><p>Per-frame latency → p50/p95/p99 + avg; effective BW from weights/latency.</p></div>
+    <div class="arrow">→</div>
+    <div class="stage"><h4>⑤ HW monitor</h4><p><code>tegrastats</code> + GPU <code>devfreq</code> clock; one-time CuPy BW ceiling probe.</p></div>
+  </div>
+  <p class="small">⏱ Only the green-outlined stage is inside the latency timer. The image read /
+  JPEG-decode <i>and</i> the resize/normalize preprocessing run in the loop but are <i>not</i>
+  charged to latency — which is why latency and end-to-end FPS diverge (see §2). Each backend's
+  <code>infer_prepared()</code> returns host arrays, so async GPU kernels are fully captured.</p>
+
+  <!-- ───────────────────────── METHODOLOGY ───────────────────────── -->
+  <h2>2 · How to read the numbers</h2>
+  <div class="panel callout">
+    <p style="margin:0 0 6px"><b>Read latency, not FPS, for model speed.</b></p>
+    <p style="margin:0">The timer wraps <code>model.infer_prepared()</code> only — preprocessing
+    runs in <code>model.prepare()</code> outside it — so <b>avg / p95 latency are pure inference</b>:
+    no JPEG read/decode and no resize/normalize. The <code>FPS</code> column
+    is <code>frames ÷ wall-clock</code> and the wall clock includes reading + JPEG-decoding
+    each 1920×1080 image (<code>cv2.imread</code>, CPU) every iteration — so <b>FPS here is
+    image-read-bound, not inference-bound.</b> The <b>inf/s</b> column (1000 ÷ avg-latency)
+    is the honest model throughput.</p>
+  </div>
+  <p class="legend"><b>Legend.</b>
+  <b>avg/p95 ms</b> = per-inference latency (timed, preprocessing excluded) ·
+  <b>inf/s</b> = 1000/avg (pure inference) ·
+  <b>FPS</b> = end-to-end incl. image read (read-bound here) ·
+  <b>effBW</b> = weight bytes streamed ÷ inference latency (lower-bound DRAM demand, §4) ·
+  <b>GPU MHz</b> = avg GPU clock (devfreq) ·
+  <b>Mem</b> peak footprint · <b>Pwr</b> CPU+GPU+CV rail.</p>
+
+  <!-- ───────────────────────── RESULTS ───────────────────────── -->
+  <h2>3 · Results</h2>
+  <table>
+    <thead>
+      <tr><th>Model</th><th>Task</th><th>avg ms</th><th>p95 ms</th><th>inf/s ✦</th>
+          <th>FPS<br><span class="small">read-bound</span></th><th>effBW<br>GB/s</th>
+          <th>GPU%</th><th>GPU MHz</th><th>Mem MB</th><th>Pwr mW</th><th>DLA*</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>squeezenet_1_1</td><td>classification</td><td class="mono">5.8</td><td class="mono">5.9</td><td class="mono"><b>173</b></td><td class="mono">35.1</td><td class="mono">0.4</td><td class="mono">10</td><td class="mono">306</td><td class="mono">6863</td><td class="mono">1646</td><td><span class="tag dla">good</span></td></tr>
+      <tr><td>mobilenet_v2</td><td>classification</td><td class="mono">8.0</td><td class="mono">8.2</td><td class="mono"><b>125</b></td><td class="mono">32.0</td><td class="mono">0.9</td><td class="mono">11</td><td class="mono">306</td><td class="mono">6303</td><td class="mono">1818</td><td><span class="tag dla">good</span></td></tr>
+      <tr><td>cuda_optflow_mono</td><td>visual_slam</td><td class="mono">12.7</td><td class="mono">14.7</td><td class="mono"><b>79</b></td><td class="mono">28.0</td><td class="mono">—</td><td class="mono">10</td><td class="mono">336</td><td class="mono">6815</td><td class="mono">2038</td><td><span class="tag ofa">OFA→</span></td></tr>
+      <tr><td>resnet50_v1</td><td>classification</td><td class="mono">15.1</td><td class="mono">15.3</td><td class="mono"><b>66</b></td><td class="mono">25.4</td><td class="mono">3.4</td><td class="mono">28</td><td class="mono">306</td><td class="mono">6747</td><td class="mono">2101</td><td><span class="tag dla">good</span></td></tr>
+      <tr><td>segformer_b0_ade</td><td>segmentation</td><td class="mono">60.2</td><td class="mono">68.6</td><td class="mono"><b>17</b></td><td class="mono">9.6</td><td class="mono">0.1</td><td class="mono">67</td><td class="mono">446</td><td class="mono">7104</td><td class="mono">1841</td><td><span class="tag nodla">poor</span></td></tr>
+      <tr><td>unet_resnet34</td><td>segmentation</td><td class="mono">65.3</td><td class="mono">76.2</td><td class="mono"><b>15</b></td><td class="mono">9.4</td><td class="mono">0.8</td><td class="mono">41</td><td class="mono">563</td><td class="mono">7108</td><td class="mono">2597</td><td><span class="tag dla">mostly</span></td></tr>
+      <tr><td>rf_detr_base</td><td>detection</td><td class="mono">66.5</td><td class="mono">80.7</td><td class="mono"><b>15</b></td><td class="mono">9.3</td><td class="mono">0.8</td><td class="mono">82</td><td class="mono">698</td><td class="mono">6859</td><td class="mono">3960</td><td><span class="tag nodla">poor</span></td></tr>
+      <tr><td>superpoint_lightglue</td><td>feature_matching</td><td class="mono">283.8</td><td class="mono">286.2</td><td class="mono"><b>3.5</b></td><td class="mono">3.1</td><td class="mono">—</td><td class="mono">67</td><td class="mono">1020</td><td class="mono">6820</td><td class="mono">6893</td><td><span class="tag nodla">poor</span></td></tr>
+    </tbody>
+  </table>
+  <p class="small">✦ <b>inf/s</b> = 1000 ÷ avg latency (real model throughput).
+  Classification/optflow ran 100 frames; segmentation/detection/matching ran 50.
+  *DLA-fit is architectural (see §5) — the Orin Nano has no DLA. <code>effBW</code> blank for
+  non-ONNX backends (weights not countable from a graph).</p>
+
+  <h3>Pure-inference latency (avg ms — lower is faster)</h3>
+  <div class="panel">
+    <div class="bar-row"><span>squeezenet_1_1</span><div class="bar-track"><div class="bar-fill" style="width:2%"></div></div><span class="mono">5.8</span></div>
+    <div class="bar-row"><span>mobilenet_v2</span><div class="bar-track"><div class="bar-fill" style="width:2.8%"></div></div><span class="mono">8.0</span></div>
+    <div class="bar-row"><span>cuda_optflow_mono</span><div class="bar-track"><div class="bar-fill" style="width:4.5%"></div></div><span class="mono">12.7</span></div>
+    <div class="bar-row"><span>resnet50_v1</span><div class="bar-track"><div class="bar-fill" style="width:5.3%"></div></div><span class="mono">15.1</span></div>
+    <div class="bar-row"><span>segformer_b0_ade</span><div class="bar-track"><div class="bar-fill" style="width:21.2%"></div></div><span class="mono">60.2</span></div>
+    <div class="bar-row"><span>unet_resnet34</span><div class="bar-track"><div class="bar-fill" style="width:23%"></div></div><span class="mono">65.3</span></div>
+    <div class="bar-row"><span>rf_detr_base</span><div class="bar-track"><div class="bar-fill" style="width:23.4%"></div></div><span class="mono">66.5</span></div>
+    <div class="bar-row"><span>superpoint_lightglue</span><div class="bar-track"><div class="bar-fill" style="width:100%"></div></div><span class="mono">283.8</span></div>
+  </div>
+
+  <h3>What the results say</h3>
+  <ul>
+    <li><b>CNN classifiers are fast and cheap</b> — squeezenet ~173 inf/s @ 1.6&nbsp;W, mobilenet ~125 inf/s. Real-time with headroom.</li>
+    <li><b>Transformers dominate cost</b> — segformer/rf_detr ~15–17 inf/s; superpoint+lightglue 284&nbsp;ms (~3.5/s) at ~6.9&nbsp;W. They also hold the GPU at 67–82% and ramp it to full clock; the classifiers don't.</li>
+    <li><b>The classifiers ran at the GPU's <i>minimum</i> 306&nbsp;MHz</b> (of 1020). The dynamic governor never saw enough sustained load to ramp them, so their latency is <i>pessimistic</i> — locking clocks (<code>jetson_clocks</code>) would speed them up. The heavy models pulled the clock to 700–1020&nbsp;MHz on their own.</li>
+    <li><b>Memory footprint is tight</b> — 6.3–7.1&nbsp;GB of 7.6&nbsp;GB used per model; several can't co-reside (see §4).</li>
+  </ul>
+
+  <!-- ───────────────────────── MEMORY / BANDWIDTH ───────────────────────── -->
+  <h2>4 · Memory &amp; bandwidth — the real constraint</h2>
+  <p>On an 8&nbsp;GB Orin Nano, memory shows up as a constraint in two distinct ways. This
+  run measures both — and finds the binding one is <b>capacity, not bandwidth</b>.</p>
+
+  <h3>① Capacity (footprint) — the binding limit here</h3>
+  <p>Peak resident memory per model, against the 7607&nbsp;MB total (unified CPU+GPU):</p>
+  <div class="panel">
+    <div class="bar-row"><span>mobilenet_v2</span><div class="bar-track"><div class="bar-fill blue" style="width:82.9%"></div></div><span class="mono">6303</span></div>
+    <div class="bar-row"><span>resnet50_v1</span><div class="bar-track"><div class="bar-fill blue" style="width:88.7%"></div></div><span class="mono">6747</span></div>
+    <div class="bar-row"><span>cuda_optflow_mono</span><div class="bar-track"><div class="bar-fill blue" style="width:89.6%"></div></div><span class="mono">6815</span></div>
+    <div class="bar-row"><span>superpoint_lightglue</span><div class="bar-track"><div class="bar-fill blue" style="width:89.7%"></div></div><span class="mono">6820</span></div>
+    <div class="bar-row"><span>rf_detr_base</span><div class="bar-track"><div class="bar-fill blue" style="width:90.2%"></div></div><span class="mono">6859</span></div>
+    <div class="bar-row"><span>squeezenet_1_1</span><div class="bar-track"><div class="bar-fill blue" style="width:90.2%"></div></div><span class="mono">6863</span></div>
+    <div class="bar-row"><span>segformer_b0_ade</span><div class="bar-track"><div class="bar-fill blue" style="width:93.4%"></div></div><span class="mono">7104</span></div>
+    <div class="bar-row"><span>unet_resnet34</span><div class="bar-track"><div class="bar-fill blue" style="width:93.4%"></div></div><span class="mono">7108</span></div>
+  </div>
+  <p class="small">Each model sits at 83–93% of total RAM (includes the CUDA/TRT runtime
+  footprint shared across the process). The practical takeaway: <b>these run one-at-a-time;
+  co-residing two of them would OOM.</b> That is the first-order memory constraint on this box.</p>
+
+  <h3>② Bandwidth — measured ceiling vs per-model demand</h3>
+  <table>
+    <thead><tr><th>Model</th><th>weights (FP16)</th><th>effective BW ✦</th><th>% of ceiling</th></tr></thead>
+    <tbody>
+      <tr><td>resnet50_v1</td><td class="mono">51.3 MB</td><td class="mono">3.4 GB/s</td><td class="mono">8%</td></tr>
+      <tr><td>mobilenet_v2</td><td class="mono">7.0 MB</td><td class="mono">0.9 GB/s</td><td class="mono">2%</td></tr>
+      <tr><td>unet_resnet34</td><td class="mono">48.9 MB</td><td class="mono">0.8 GB/s</td><td class="mono">2%</td></tr>
+      <tr><td>rf_detr_base</td><td class="mono">53.8 MB</td><td class="mono">0.8 GB/s</td><td class="mono">2%</td></tr>
+      <tr><td>squeezenet_1_1</td><td class="mono">2.5 MB</td><td class="mono">0.4 GB/s</td><td class="mono">1%</td></tr>
+      <tr><td>segformer_b0_ade</td><td class="mono">7.5 MB</td><td class="mono">0.1 GB/s</td><td class="mono">&lt;1%</td></tr>
+    </tbody>
+  </table>
+  <p class="small">✦ effective BW = FP16 weight bytes streamed per inference ÷ avg inference latency
+  (timed with preprocessing excluded — pure backend execution). It counts weight traffic only,
+  so it remains a lower bound: activation traffic adds more and isn't captured here.
+  <b>Measured device ceiling this run: 43.2 GB/s</b> (CuPy device-to-device copy; ~68 GB/s
+  theoretical). Note it read <b>20.4 GB/s on an earlier run</b> — the ceiling itself moves
+  with the EMC clock / power state, which is why power mode must be pinned (below).</p>
+  <div class="panel callout info">
+    <p style="margin:0 0 8px"><b>Finding: at batch = 1, none of these models are
+    weight-bandwidth-bound.</b> Weight streaming uses ≤8% of the measured ceiling — they are
+    compute- and latency-bound instead (low GPU clock on the light models, kernel-launch
+    overhead, the CPU image read). Bigger model ⇒ more weight bytes ⇒ higher effective BW
+    (resnet50’s 51&nbsp;MB pulls 3.4&nbsp;GB/s vs squeezenet’s 2.5&nbsp;MB at 0.4) — exactly
+    the volume-÷-time relationship — but all well under the wall.</p>
+    <p style="margin:0"><b>Caveat (important):</b> this is a <i>lower bound</i> — it counts
+    weights only. The segmentation/detection models move large <i>activation</i> tensors
+    (e.g. 512×512 feature maps) that dwarf their weights, so their <i>true</i> DRAM traffic
+    is far above the 0.1–0.8&nbsp;GB/s shown. Measuring that needs the hardware memory-controller
+    counters, which on Orin/JP6 are root-only (no EMC in tegrastats, no <code>actmon</code>
+    sysfs, debugfs unmounted in the container). The clean way to get true live EMC bandwidth
+    is <code>jetson-stats</code> (its root service exposes EMC; a non-root client reads it) —
+    a planned follow-up.</p>
+  </div>
+
+  <h3>③ Pin the power mode before quoting anything</h3>
+  <p class="small">The measured BW ceiling moved 20→43&nbsp;GB/s between runs and the
+  classifiers sat at the 306&nbsp;MHz GPU floor — both are governor/power-state artefacts.
+  For stable, comparable numbers run <code>sudo nvpmodel -m 0 &amp;&amp; sudo jetson_clocks</code>
+  (max clocks, locked) and record the mode alongside results. Unpinned clocks change these
+  figures more than most model choices do.</p>
+
+  <!-- ───────────────────────── SCALING / DLA ───────────────────────── -->
+  <h2>5 · Scaling up: Orin NX + DLA, and the AGX question</h2>
+  <p>The Orin Nano has <b>GPU only — no DLA</b>. Orin NX and AGX Orin add <b>2× NVDLA 2.0</b>
+  fixed-function accelerators that run a subset of layers (mostly CNN ops) at low power, with
+  GPU fallback for the rest.</p>
+
+  <table>
+    <thead><tr><th>Spec (published)</th><th>Orin Nano 8GB (this)</th><th>Orin NX 16GB</th><th>AGX Orin 64GB</th></tr></thead>
+    <tbody>
+      <tr><td>GPU (Ampere)</td><td class="mono">1024 CUDA / 32 TC</td><td class="mono">1024 / 32</td><td class="mono">2048 / 64</td></tr>
+      <tr><td>DLA</td><td class="mono">none</td><td class="mono">2× NVDLA 2.0</td><td class="mono">2× NVDLA 2.0</td></tr>
+      <tr><td>Memory bandwidth</td><td class="mono">~68 GB/s</td><td class="mono">~102 GB/s</td><td class="mono">~204 GB/s</td></tr>
+      <tr><td>AI perf (INT8, sparse)</td><td class="mono">~40 TOPS</td><td class="mono">~100 TOPS</td><td class="mono">~275 TOPS</td></tr>
+    </tbody>
+  </table>
+
+  <h3>How these workloads scale on an NX</h3>
+  <ul>
+    <li><b>Offload CNNs to DLA, keep the GPU for transformers.</b> Pin squeezenet/mobilenet/resnet50/most-of-unet to <code>DLACore 0/1</code>; leave segformer/rf_detr/lightglue on the GPU. The two engine types then run <b>concurrently</b> — raising aggregate pipeline throughput, not just single-model speed.</li>
+    <li><b>Perf/watt is the DLA win,</b> not peak speed — a single CNN can be marginally slower on one DLA than the GPU, but at lower power and it frees the GPU.</li>
+    <li><b>More bandwidth helps the heavy models</b> (NX ~1.5×, AGX ~3× this Nano). Segmentation/detection activation traffic is where bandwidth actually bites — exactly the part the §4 lower bound doesn’t capture.</li>
+    <li><b>Optical flow has its own engine</b> — <code>cuda_optflow_mono</code> can target the Orin <b>OFA</b>, off-loading the GPU entirely.</li>
+  </ul>
+
+  <h3 id="agx">Would an AGX run accurately predict DLA performance on an NX?</h3>
+  <div class="panel callout info">
+    <p style="margin:0 0 8px"><b>For architecture/bring-up: yes. For absolute numbers: no.</b></p>
+    <p style="margin:0 0 8px"><b>Transfers (AGX → NX):</b> same NVDLA 2.0 IP, so which layers
+    compile to DLA vs fall back to GPU, the fallback size, INT8 accuracy, and the relative
+    model ranking are all representative. Use AGX to validate the DLA path and decide what to
+    offload.</p>
+    <p style="margin:0 0 8px"><b>Doesn’t transfer:</b> absolute latency/throughput. AGX DLA
+    runs at a higher clock and—decisively—has <b>~2× the memory bandwidth</b> of NX. DLA on
+    these CNNs is often bandwidth-bound, so <b>AGX DLA over-estimates NX DLA</b>, often a lot.</p>
+    <p style="margin:0"><b>Bottom line:</b> AGX proves the mapping and ranks models; measure
+    on a real NX (at the target <code>nvpmodel</code>) for numbers you quote. AGX→NX
+    clock+bandwidth scaling is a rough first guess only — and fix the power mode either way.</p>
+  </div>
+
+  <h3>To actually test DLA in this harness</h3>
+  <p class="small">Today: ONNX Runtime TensorRT EP (FP16, GPU). DLA needs engines built for it,
+  e.g. <code>trtexec --onnx=m.onnx --useDLACore=0 --int8 --allowGPUFallback --saveEngine=m.dla.trt</code>,
+  loaded through <code>tensorrt_backend.py</code>. Engines are device/clock-specific — build
+  and measure on the NX/AGX itself.</p>
+
+  <hr>
+  <p class="small">Generated from <code>results/benchmark_2026-06-28_22-25-21.csv</code>.
+  Latency = pure inference (<code>model.infer_prepared()</code> only — preprocessing and decode
+  excluded); FPS is end-to-end and read-bound for this image_dir run; effective BW is a
+  weight-only lower bound. Device
+  specs are vendor-published approximations.</p>
+
+</div>
+</body>
+</html>

@@ -79,11 +79,14 @@ class CudaOptFlowModel(BaseModel):
             self._K[1, 1], self._K[1, 2],
         )
 
-    def infer(self, frame: np.ndarray) -> List[np.ndarray]:
+    def prepare(self, frame: np.ndarray) -> np.ndarray:
         import cv2
-
+        # Resize + grayscale — untimed preprocessing.
         _, _, h, w = self.input_shape
-        gray = cv2.cvtColor(cv2.resize(frame, (w, h)), cv2.COLOR_BGR2GRAY)
+        return cv2.cvtColor(cv2.resize(frame, (w, h)), cv2.COLOR_BGR2GRAY)
+
+    def infer_prepared(self, gray: np.ndarray) -> List[np.ndarray]:
+        import cv2
 
         identity = np.eye(3, 4, dtype=np.float32).ravel()  # 12-element [R|t]
 
